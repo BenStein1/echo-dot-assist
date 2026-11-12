@@ -6,9 +6,13 @@ what it computes at chosen points, and disassembling functions where behaviour a
 code was used.  (It is not a "clean room": the binary was disassembled and executed.)  Nothing of Amazon's is in this folder: the
 tools read the model and the library from the firmware you unpacked (`devices/donut/README.md`).
 
-[`LEDGER.md`](LEDGER.md) is the log of every measurement, in order, with what each one ruled out.  The Echo-side use of it,
-training a wake word, is in the separate [training contribution](https://github.com/BenStein1/echo-dot-assist/tree/pr-train-wake-word),
-`docs/re-pryon-training.md` and `src/hassmic/enroll.c`; those files are not part of this research branch.
+[`LEDGER.md`](LEDGER.md) records the measurements and what each ruled out. On [BenStein1's fork main](https://github.com/BenStein1/echo-dot-assist),
+these reconstruction tools and the training feature coexist: see [the training design](../../docs/re-pryon-training.md)
+and [enrollment implementation](../../src/hassmic/enroll.c).
+
+They remain separate upstream submissions: [reconstruction PR #171](https://github.com/Gamer92000/echo-dot-assist/pull/171)
+and [training PR #172](https://github.com/Gamer92000/echo-dot-assist/pull/172). The research PR's standalone branch does not
+contain the training implementation; the integrated fork main contains both.
 
 ## What is reconstructed, and what it was checked against
 

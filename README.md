@@ -1,5 +1,30 @@
 # echo-dot-assist
 
+
+## BenStein1's Pryon research and custom wake words
+
+This is **BenStein1's research fork** of [Gamer92000/echo-dot-assist](https://github.com/Gamer92000/echo-dot-assist).
+The original Home Assistant satellite and Echo platform are Julian Imhof's and upstream contributors' work; the
+unlock work remains credited below. Ben's subsequent contribution is the Pryon runtime investigation, DSP/streaming
+reconstruction, custom wake-word training, and safe installation/recovery on the Dot 3, developed with AI assistance.
+
+**Measured result: 828/828 evaluated 64-bin feature frames bit-exact at Pryon's normalized conv1 input**, rechecked
+against retained genuine-runtime captures. This is a finite, build-specific result—not universal arbitrary-phrase
+reliability. [Research overview, architecture, evidence and limits](docs/pryon-research.md).
+
+| Explore | Where |
+|---|---|
+| Runtime/DSP reconstruction and reproducible synthetic tests | [tools/pryon-native](tools/pryon-native/README.md) |
+| Experimental microphone enrollment and on-device training | [Training design and device validation](docs/re-pryon-training.md) |
+| Upstream research submission (pending) | [PR #171](https://github.com/Gamer92000/echo-dot-assist/pull/171) |
+| Upstream training submission (pending) | [PR #172](https://github.com/Gamer92000/echo-dot-assist/pull/172) |
+
+Both contributions are integrated in this fork's `main`; neither was merged upstream when this overview was prepared.
+A standalone, source-only research release is being prepared separately for approval. No proprietary models or
+personal recordings are included. The original project's overview follows.
+
+---
+
 **Turn an old Amazon Echo into a Home Assistant voice satellite that never talks to Amazon.**
 
 The Echo keeps what it is good at: Amazon's microphone processing and wake word engine, so it still hears you across

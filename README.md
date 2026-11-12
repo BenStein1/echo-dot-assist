@@ -20,8 +20,9 @@ reliability. [Research overview, architecture, evidence and limits](docs/pryon-r
 | Upstream training submission (pending) | [PR #172](https://github.com/Gamer92000/echo-dot-assist/pull/172) |
 
 Both contributions are integrated in this fork's `main`; neither was merged upstream when this overview was prepared.
-A standalone, source-only research release is being prepared separately for approval. No proprietary models or
-personal recordings are included. The original project's overview follows.
+The standalone [Pryon research repository](https://github.com/BenStein1/pryon-research) publishes the source-only
+reconstruction, synthetic demo, numerical evidence and training studies. No proprietary models or personal recordings
+are included. The original project's overview follows.
 
 ---
 

@@ -64,9 +64,11 @@ python3 tools/pryon-native/tests/test_pryon_runtime_capture.py
 ```
 
 Install the declared reconstruction Python dependencies first. These are synthetic/contract checks, not a wake-word
-accuracy demonstration. The standalone source-only release candidate adds a firmware-free DSP/QAT/decoder demo and a
-retained-capture comparison tool. It remains private pending approval; a public repository link will be added once
-publication is authorized. This page is the public route to the already-available research in the meantime.
+accuracy demonstration. The published [standalone Pryon research](https://github.com/BenStein1/pryon-research) adds a firmware-free
+DSP/QAT/decoder demo, a retained-capture comparison tool, exact source inventory and attribution. Its
+[reviewed initial snapshot](https://github.com/BenStein1/pryon-research/commit/88487e58859db586681dd4b9bae1b5953981efd1)
+passed [hosted synthetic CI](https://github.com/BenStein1/pryon-research/actions/runs/43215812663). That hosted run
+contains no proprietary runtime or speech-accuracy evaluation.
 
 ## Hardware evidence and remaining tests
 

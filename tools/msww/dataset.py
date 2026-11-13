@@ -23,11 +23,20 @@ def _prompts(d, lead=0.3, span=4.8):
     return out
 
 
+def _from_labels(name, pre=0.3, post=0.7):
+    """Windows from labels.py (bursts of the actual audio, matched by order to the prompts). Flagged prompts keep a '!' in the text."""
+    r = json.load(open(os.path.join(M, 'labels', name + '.json')))
+    out = []
+    for p in r['prompts']:
+        if not p['bursts']:
+            continue
+        a, b = min(x['start'] for x in p['bursts']) - pre, max(x['end'] for x in p['bursts']) + post
+        out.append((a, b, p['kind'], p['prompt'] + (' !' if p['flag'] else '')))
+    return out
+
+
 def windows():
-    w = {}
-    w['w171828'] = _prompts('wake-check-20261112-171828')
-    w['w172114'] = _prompts('wake-check-20261112-172114')
-    w['live'] = _prompts('live-wake-check-20261112-175530', span=6.8)
+    w = {n: _from_labels(n) for n in ('w171828', 'w172114', 'live')}
     raw = os.path.join(M, 'rec', 'rdot.raw')
     bs = bursts(raw)
     dots = json.load(open(os.path.join(B, 'false-wake-reopen', 'repeated-dot.json')))

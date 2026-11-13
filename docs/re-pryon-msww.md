@@ -94,3 +94,30 @@ failed with missing-bearer 401 errors. The settled worker also exhausted its
 Anthropic quota and failed LiteLLM authentication. Configured fallback lists
 are not evidence of a working provider. These are outstanding review/runtime
 blockers, not a completed review. Nothing was deployed to the Dot.
+
+### Replay recovery — 2026-11-13
+
+The first gate correction was overbroad: matching `backlog|dropp|skipp`
+rejected configuration keys and `skipped 0 during shutdown`. The gate now
+checks nonzero skipped/dropped diagnostics and structured loss counters in
+result metadata. Its cache version and test-executable digest invalidate old
+results. `python3 tools/msww/test_gate.py` checks benign and nonzero cases.
+Candidate parity now fails on time or score mismatch as well as counts;
+timestamp tolerance is less than one sample and score tolerance is `1e-5`.
+
+Fresh packaged-engine replay agrees with simulation on `w171828` (4 accepts),
+`w172114` (4), and `live` (2), including timing and scores. These are training
+recordings, not held-out accuracy evidence. Current working labels exclude
+some earlier positives; these counts do not establish a new recall figure.
+The `rdot` replay is rejected because `audioMetadataDuringDetection` contains
+nonzero `dropFramesCount`/`largestFrameDropedAtOnce`, despite zero decoder
+skipped-backlog counters. These front-end metadata counters must not be
+confused with proof that the replay harness itself dropped samples. Their
+origin and effect remain unresolved; the gate conservatively rejects them.
+Absence of nonzero counters is not independent proof of every internal frame
+being processed, especially in streams with no callbacks.
+
+The continuation worker exhausted OpenAI authentication, Anthropic quota,
+and LiteLLM authentication before producing output. No workers remained
+active when the parent recovered this event. Uncommitted ASR, compact-pool,
+curve, and C-trainer experiments remain separate, unreviewed work.

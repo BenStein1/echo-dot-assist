@@ -9,14 +9,36 @@ Needs build/donut/pryon_test (make DEVICE=donut), qemu-arm, bwrap and the unpack
 import os, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from feat import read_results
+import json, re
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+
+def audio_loss(err, result_path):
+    """Reject actual loss, not config names, queued latency, or skipped-zero shutdowns."""
+    for line in err.splitlines():
+        if re.search(r'\b(?:dropped|skipped)\s+[1-9]\d*\b', line, re.I):
+            return True
+    with open(result_path, errors='replace') as f:
+        for line in f:
+            if not line.startswith('META'):
+                continue
+            meta = json.loads(line[line.index('{'):])
+            for section, keys in (
+                ('deviceMetrics', ('skipped_audio_backlog_since_last_ww_msec', 'sum_client_sample_index_gaps_since_last_ww')),
+                ('audioMetadataDuringDetection', ('dropFramesCount', 'largestFrameDropedAtOnce')),
+            ):
+                if any(meta.get(section, {}).get(key, 0) != 0 for key in keys):
+                    return True
+    return False
 
 
 def _fingerprint(set_dir, raw, speed):
     """What a cached result is bound to: every file of the set, the input, the speed."""
     import hashlib
     h = hashlib.sha256()
+    h.update(b'replay-validation-v2')
+    h.update(hashlib.sha256(open(ROOT + '/build/donut/pryon_test', 'rb').read()).digest())
     for root, _, files in sorted(os.walk(set_dir)):
         for f in sorted(files):
             p = os.path.join(root, f)
@@ -47,7 +69,7 @@ def run_one(set_dir, out_dir, raw, speed=3, timeout=3000):
     problems = []
     if rc not in (0, 3): problems.append('exit code %d' % rc)
     if not m or int(m.group(1)) != want: problems.append('pushed %s of %d samples' % (m.group(1) if m else 'unknown', want))
-    if re.search(r'backlog|dropp|skipp', err, re.I): problems.append('engine reported dropped/skipped audio')
+    if audio_loss(err, out + '.part'): problems.append('engine reported dropped/skipped audio')
     if problems:
         os.rename(out + '.part', out + '.FAILED')
         raise RuntimeError('replay gate run invalid for %s: %s (see %s.err)' % (name, '; '.join(problems), out))

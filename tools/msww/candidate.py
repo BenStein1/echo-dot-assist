@@ -58,13 +58,14 @@ def cmd_gate(a):
         s = S[n]
         sim = T.events_of(s, m, j['decay'], j['accept'], True)
         cat = T.categorize(s, ev)
-        res[n] = dict(engine=[(round(t, 3), round(sc, 4)) for t, sc in ev], sim=[(round(t, 3), round(sc, 4)) for t, sc in sim], cat={k: v for k, v in cat.items()})
-        agree = len(ev) == len(sim) and all(abs(e[0] - q[0]) < 0.16 for e, q in zip(ev, sim))
+        res[n] = dict(engine=ev, sim=sim, cat={k: v for k, v in cat.items()})
+        agree = len(ev) == len(sim) and all(abs(e[0] - q[0]) < 1 / 16000 and abs(e[1] - q[1]) < 1e-5 for e, q in zip(ev, sim))
+        res[n]['agree'] = agree
         print(f"{n:16s} engine accepts {len(ev)} sim {len(sim)} agree={agree}  pos {cat['pos_hit']}/{cat['pos']} dot_fa {cat['dot_fa']} speech_fa {cat['speech_fa']} reply_fa {cat['reply_fa']} unl {cat['unl_fa']} corpus_fa {cat['corpus_fa']}")
     json.dump(res, open(a.out, 'w'), indent=1, default=str)
-    bad = [n for n, v in res.items() if len(v['engine']) != len(v['sim'])]
+    bad = [n for n, v in res.items() if not v['agree']]
     if bad:
-        sys.exit('GATE FAILED: engine and simulation disagree on accept counts for ' + ', '.join(bad))
+        sys.exit('GATE FAILED: engine and simulation disagree on accept count, time or score for ' + ', '.join(bad))
 
 
 if __name__ == '__main__':

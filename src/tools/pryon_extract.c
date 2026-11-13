@@ -22,6 +22,11 @@ static int output_fd = -1;
 static _Atomic int enabled, failed;
 static uint32_t cycles;
 static uintptr_t library_base;
+/* -w: multi-wakeword decoder (odyssey_msww) mode. Taps the [15,512] HybridGemm (kernel/Dense:20): per call, the m x 512
+ * float input and, captured when the kernel is next entered, its m x 15 float output (before the bias and the softmax).
+ * The file header is {magic, 2, 512, 15}; each record is {m, x[m][512], y[m][15]}. */
+static int msww_mode;
+static const float *pending_y; static uint32_t pending_m, pending_ystride;
 
 static int write_all(int fd, const void *data, size_t n)
 {
@@ -32,8 +37,30 @@ static int write_all(int fd, const void *data, size_t n)
 }
 
 /* Called with every general/VFP register and the original argument stack saved. */
+static void flush_pending(void)
+{
+    if (!pending_y) return;
+    for (uint32_t i = 0; i < pending_m; i++)
+        if (write_all(output_fd, pending_y + (size_t)i * pending_ystride, 15 * sizeof(float))) atomic_store(&failed, 1);
+    pending_y = NULL;
+}
+
 void pryon_capture_enter(const uint32_t *r, const uint32_t *stack)
 {
+    if (msww_mode) {
+        if (!atomic_load(&enabled)) return;
+        flush_pending();
+        if (r[3] != 512 || stack[11] != 15) return;
+        if (!r[1] || !r[2] || r[2] > 64 || stack[0] < 512 || !stack[9] || stack[12] < 15) { atomic_store(&failed, 1); return; }
+        uint32_t m = r[2];
+        if (write_all(output_fd, &m, sizeof m)) atomic_store(&failed, 1);
+        for (uint32_t i = 0; i < m; i++)
+            if (write_all(output_fd, (const float *)(uintptr_t)r[1] + (size_t)i * stack[0], 512 * sizeof(float)))
+                atomic_store(&failed, 1);
+        pending_y = (const float *)(uintptr_t)stack[9]; pending_m = m; pending_ystride = stack[12];
+        cycles++;
+        return;
+    }
     if (!atomic_load(&enabled) || r[3] != 100 || stack[11] != 3) return;
     if (r[2] != 25 || stack[0] != 100 || !r[1]) { atomic_store(&failed, 1); return; }
     if (write_all(output_fd, (const void *)(uintptr_t)r[1], 25 * 100 * sizeof(float)))
@@ -100,17 +127,20 @@ static int push(const int16_t *pcm, size_t n, uint64_t *sample)
 {
     int rc = PryonDecoder_PushAudioEventSamples("extract-dec", *sample, pcm, n);
     *sample += n;
-    usleep((useconds_t)(n * 1000000 / 16000));
+    static double speed; if (speed == 0) { const char *e = getenv("PRYON_EXTRACT_SPEED"); speed = e && atof(e) > 0 ? atof(e) : 1; }
+    usleep((useconds_t)(n * 1000000 / 16000 / speed));   /* real time unless PRYON_EXTRACT_SPEED (offline runs under qemu) */
     return rc;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 4) { fprintf(stderr, "usage: pryon-extract MANIFEST PADDED_RAW NEW_FEATURE_FILE\n"); return 2; }
+    if (argc == 5 && !strcmp(argv[1], "-w")) { msww_mode = 1; argv++; argc--; }
+    if (argc != 4) { fprintf(stderr, "usage: pryon-extract [-w] MANIFEST PADDED_RAW NEW_FEATURE_FILE\n"); return 2; }
     FILE *in = fopen(argv[2], "rb"); if (!in) { perror("audio"); return 1; }
     output_fd = open(argv[3], O_WRONLY|O_CREAT|O_EXCL, 0600);
     if (output_fd < 0) { perror("features"); fclose(in); return 1; }
     uint32_t header[4] = { 0x46595250, 1, 25, 100 };
+    if (msww_mode) { header[1] = 2; header[2] = 512; header[3] = 15; }
     if (write_all(output_fd, header, sizeof header) || observe()) {
         fprintf(stderr, "Cannot initialize guarded activation observer\n"); return 1;
     }
@@ -129,8 +159,9 @@ int main(int argc, char **argv)
     PryonDecoder_Delete("extract-dec");
     PryonModelSet_Delete("extract-ms");
     atomic_store(&enabled, 0);
+    if (msww_mode) flush_pending();
     if (fsync(output_fd) || close(output_fd)) rc = 1;
-    fprintf(stderr, "samples=%llu cycles=%u rows=25 columns=100 capture_error=%d\n",
-            (unsigned long long)samples, cycles, atomic_load(&failed));
+    fprintf(stderr, "samples=%llu cycles=%u rows=%d columns=%d capture_error=%d\n",
+            (unsigned long long)samples, cycles, msww_mode ? 1 : 25, msww_mode ? 512 : 100, atomic_load(&failed));
     return rc || atomic_load(&failed) || !cycles ? 1 : 0;
 }

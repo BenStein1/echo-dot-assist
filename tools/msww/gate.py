@@ -13,18 +13,46 @@ from feat import read_results
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 
+def _fingerprint(set_dir, raw, speed):
+    """What a cached result is bound to: every file of the set, the input, the speed."""
+    import hashlib
+    h = hashlib.sha256()
+    for root, _, files in sorted(os.walk(set_dir)):
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            h.update(os.path.relpath(p, set_dir).encode()); h.update(hashlib.sha256(open(p, 'rb').read()).digest())
+    st = os.stat(raw)
+    h.update(('%s|%d|%d|%s' % (os.path.abspath(raw), st.st_size, st.st_mtime_ns, speed)).encode())
+    return h.hexdigest()
+
+
 def run_one(set_dir, out_dir, raw, speed=3, timeout=3000):
+    """A result counts only if the engine exited 0 (events) or 3 (no events), and its own log says it pushed EVERY sample (no dropped audio)."""
+    import re, json
     name = os.path.basename(raw)[:-4]
     out = os.path.join(out_dir, name + '.res')
-    if os.path.exists(out):
+    fp = _fingerprint(set_dir, raw, speed)
+    meta = out + '.json'
+    if os.path.exists(out) and os.path.exists(meta) and json.load(open(meta)).get('fingerprint') == fp:
         return out
     cmd = ['timeout', '-s', 'KILL', str(timeout), 'bwrap', '--ro-bind', '/', '/', '--bind', '/tmp', '/tmp', '--bind', ROOT + '/build', ROOT + '/build',
            '--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--die-with-parent', '/usr/bin/qemu-arm', '-L', ROOT + '/firmware/donut/rootfs',
            '-E', 'LD_LIBRARY_PATH=/system/lib:/system/vendor/lib', ROOT + '/build/donut/pryon_test', '-m', os.path.join(set_dir, 'pryon.manifest'),
            '-x', str(speed), raw]
-    with open(out + '.part', 'w') as f:
-        subprocess.run(cmd, stdout=f, stderr=subprocess.DEVNULL)
+    with open(out + '.part', 'w') as f, open(out + '.err', 'w') as e:
+        rc = subprocess.run(cmd, stdout=f, stderr=e).returncode
+    err = open(out + '.err', errors='replace').read()
+    m = re.search(r'pushed (\d+) samples', err)
+    want = os.path.getsize(raw) // 2
+    problems = []
+    if rc not in (0, 3): problems.append('exit code %d' % rc)
+    if not m or int(m.group(1)) != want: problems.append('pushed %s of %d samples' % (m.group(1) if m else 'unknown', want))
+    if re.search(r'backlog|dropp|skipp', err, re.I): problems.append('engine reported dropped/skipped audio')
+    if problems:
+        os.rename(out + '.part', out + '.FAILED')
+        raise RuntimeError('replay gate run invalid for %s: %s (see %s.err)' % (name, '; '.join(problems), out))
     os.rename(out + '.part', out)
+    json.dump(dict(fingerprint=fp, rc=rc, pushed=want), open(meta, 'w'))
     return out
 
 

@@ -62,6 +62,9 @@ def cmd_gate(a):
         agree = len(ev) == len(sim) and all(abs(e[0] - q[0]) < 0.16 for e, q in zip(ev, sim))
         print(f"{n:16s} engine accepts {len(ev)} sim {len(sim)} agree={agree}  pos {cat['pos_hit']}/{cat['pos']} dot_fa {cat['dot_fa']} speech_fa {cat['speech_fa']} reply_fa {cat['reply_fa']} unl {cat['unl_fa']} corpus_fa {cat['corpus_fa']}")
     json.dump(res, open(a.out, 'w'), indent=1, default=str)
+    bad = [n for n, v in res.items() if len(v['engine']) != len(v['sim'])]
+    if bad:
+        sys.exit('GATE FAILED: engine and simulation disagree on accept counts for ' + ', '.join(bad))
 
 
 if __name__ == '__main__':

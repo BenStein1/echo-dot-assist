@@ -10,8 +10,11 @@ Nothing of Amazon's is stored in this repository; SRC is a set pulled from a dev
 """
 import copy, json, os, shutil, sys
 import numpy as np
-import onnx
-from onnx import numpy_helper as nh
+try:
+    import onnx
+    from onnx import numpy_helper as nh
+except ImportError:      # fitting needs scipy (system python), packing needs onnx (build/pryon-review-venv): import lazily
+    onnx = nh = None
 
 ONNX = 'multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx'
 ROW = {'kernel': 'kernel/Dense:20', 's': 'kernel/Dense:20_s', 'zp': 'kernel/Dense:20_zp', 'sums': 'kernel/Dense:20_sums',

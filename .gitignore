@@ -20,3 +20,6 @@ xda_post.md
 __pycache__/
 *.pyc
 /kiosk-satellite-*.apk
+
+# Private local deployment notes
+/NOTES.md

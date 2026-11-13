@@ -121,3 +121,39 @@ The continuation worker exhausted OpenAI authentication, Anthropic quota,
 and LiteLLM authentication before producing output. No workers remained
 active when the parent recovered this event. Uncommitted ASR, compact-pool,
 curve, and C-trainer experiments remain separate, unreviewed work.
+
+### Candidate recovery and metadata control — 2026-11-13
+
+Five of the six HELD streams have validated packaged-engine evidence: zero
+NOVA accepts, matching simulation, over **0.606524 h** of unique speech.
+`en-gb-f-elderly` (0.175008 h) also contains zero NOVA accepts, but its replay
+was rejected for nonzero front-end metadata drop counters. Do not count that
+failed result as valid exposure. Evidence: ignored
+`build/msww/held-recovery-verified.json`. No candidate was deployed.
+
+The source recording must be distinguished from a decoder backlog loss.
+A controlled offline copy of `rdot.raw`, with bit 0 cleared in every int16
+sample (`samples & -2`, at most one PCM count of change), passes the unchanged
+strict replay gate. All its callbacks now report `has_audio_lsb_metadata=0`;
+the source replay reported embedded front-end drop counters. Fresh features
+from that exact controlled input match all four real-engine NOVA accepts
+in count, time, and score (`1e-5` tolerance): 22.96, 27.76, 32.88, 38.08 s.
+The control is a **different input**, not a retroactive pass of the original
+recording, nor justification to ignore front-end counters in live audio.
+Evidence is under ignored `build/msww/metadata-control/`.
+
+Importantly, the first two accepts fall inside windows that the saved ASR
+check transcribed as **dot**, not Nova (22.25–23.65 and 27.00–28.40 s).
+The working dataset currently sets such contradicted positive windows aside
+as `ignore`. Thus reporting only `dot_fa=0` hides two unresolved accepts;
+`candidate.py gate` now also prints `ignored_accepts`. ASR is imperfect and
+was prompted with the target words: it is not independent semantic ground
+truth. These two detections must be adjudicated, not silently excluded from
+a performance claim. Training-set recall is not held-out recall.
+
+The preserved compact/C-trainer experiments are not yet accepted. Review
+found that `ondev_check.py` computes a dequantized pool (`Xdq`) but does not
+use it in the scipy reference, despite claiming identical input; C mining
+attenuates nonsequential samples by `(1-decay)` while Python leaves them
+unsmoothed; and the C input loaders need bounds/finite-value validation.
+Do not describe a host-only compilation as on-device validation.

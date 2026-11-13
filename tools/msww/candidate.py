@@ -61,7 +61,7 @@ def cmd_gate(a):
         res[n] = dict(engine=ev, sim=sim, cat={k: v for k, v in cat.items()})
         agree = len(ev) == len(sim) and all(abs(e[0] - q[0]) < 1 / 16000 and abs(e[1] - q[1]) < 1e-5 for e, q in zip(ev, sim))
         res[n]['agree'] = agree
-        print(f"{n:16s} engine accepts {len(ev)} sim {len(sim)} agree={agree}  pos {cat['pos_hit']}/{cat['pos']} dot_fa {cat['dot_fa']} speech_fa {cat['speech_fa']} reply_fa {cat['reply_fa']} unl {cat['unl_fa']} corpus_fa {cat['corpus_fa']}")
+        print(f"{n:16s} engine accepts {len(ev)} sim {len(sim)} agree={agree}  pos {cat['pos_hit']}/{cat['pos']} dot_fa {cat['dot_fa']} speech_fa {cat['speech_fa']} reply_fa {cat['reply_fa']} unl {cat['unl_fa']} corpus_fa {cat['corpus_fa']} ignored_accepts {cat['ign']}")
     json.dump(res, open(a.out, 'w'), indent=1, default=str)
     bad = [n for n, v in res.items() if not v['agree']]
     if bad:

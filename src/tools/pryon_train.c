@@ -149,7 +149,8 @@ int main(int argc,char**argv)
     int steps=argc==5?atoi(argv[4]):1600;if(steps<1||steps>100000)return 2;
     struct model model;if(model_load(argv[1],&model)){fprintf(stderr,"Unsupported original-architecture head\n");return 1;}
     struct bytes manifest={0};struct json j={0};if(read_file(argv[2],&manifest,256*1024)||json_parse(&j,(char*)manifest.p,manifest.n))return 1;
-    int n=json_len(&j,0);if(json_type(&j,0)!=J_ARR||n<12||n>200){fprintf(stderr,"Require12..200feature records, got%d\n",n);return 1;}
+    int cap=200;{const char*e=getenv("PRYON_TRAIN_MAX_RECORDS");if(e&&atoi(e)>0&&atoi(e)<=20000)cap=atoi(e);}   /* the Echo's budget by default; a PC campaign raises it */
+    int n=json_len(&j,0);if(json_type(&j,0)!=J_ARR||n<12||n>cap){fprintf(stderr,"Require12..%d feature records, got%d\n",cap,n);return 1;}
     char directory[1024];if(strlen(argv[2])>=sizeof directory)return 1;strcpy(directory,argv[2]);char*slash=strrchr(directory,'/');if(slash)*slash=0;else strcpy(directory,".");
     struct {char path[1400];int label,train;}*rows=calloc((size_t)n,sizeof *rows);
     struct pq_clip*clips=calloc((size_t)n,sizeof *clips);if(!rows||!clips)return 1;

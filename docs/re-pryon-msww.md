@@ -157,3 +157,28 @@ use it in the scipy reference, despite claiming identical input; C mining
 attenuates nonsequential samples by `(1-decay)` while Python leaves them
 unsmoothed; and the C input loaders need bounds/finite-value validation.
 Do not describe a host-only compilation as on-device validation.
+
+The same bit-0-cleared control for the rejected HELD stream also passes
+the unchanged gate: zero NOVA accepts over 0.175008 h, with
+`has_audio_lsb_metadata=0`. This supports the metadata-origin diagnosis,
+not a pass of the original source stream or additional unique exposure.
+
+Enrollment-size sweep completed with one deterministic draw per cell:
+`OPENBLAS_NUM_THREADS=1 python3 tools/msww/curve.py --draws 1 --out build/msww/curve-recovery.json`.
+These are exploratory simulations with the working ASR-filtered labels,
+fixed decay 0.6 / accept 0.8, not independent production estimates.
+
+| Real examples | Shared pool: real only | Shared pool: +augmentation | +own negatives: real only | +own negatives: +augmentation |
+|---|---|---|---|---|
+| 2 | 6/12, 2 FA | 10/12, 53 FA | 3/12, 0 FA | 6/12, 0 FA |
+| 4 | 10/12, 4 FA | 12/12, 95 FA | 4/12, 0 FA | 9/12, 0 FA |
+| 8 | 12/12, 4 FA | 12/12, 100 FA | 5/12, 0 FA | 9/12, 0 FA |
+
+Each cell shows Nova detections and **reported** Ben nonword false accepts.
+Those FA counts exclude ignored windows, so zero is not a complete safety
+claim. Each fitted row has zero simulated HELD-corpus accepts on the same
+0.781532 h, not four independent copies of that exposure. Augmentation
+uses five clips per real example, not five independent utterances. The
+shared-only augmentation sharply increases false accepts; adding own
+negatives improves rejection but loses recall. There is no supported
+Amazon-level specificity or minutes-long enrollment recommendation yet.

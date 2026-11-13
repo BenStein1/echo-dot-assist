@@ -32,7 +32,7 @@ def _stream(X, Y, k, name, **kw):
     return dict(name=name, X=X, Y=Y.astype(np.float64), L=F.base_logit(Y.astype(np.float64), k), t=cyc_end(len(X)), **kw)
 
 
-def ben_windows(name):
+def _ben_windows_raw(name):
     """-> dict(pos=[(a,b)], dot=[...], speech=[...], reply=[...], ignore=[...]) seconds."""
     if name == 'rdot':
         from bursts import bursts
@@ -57,6 +57,20 @@ def ben_windows(name):
             continue
         a, b = min(x['start'] for x in p['bursts']), max(x['end'] for x in p['bursts'])
         d[{'pos': 'pos', 'dot': 'dot', 'speech': 'speech'}[p['kind']]].append((a - 0.3, b + 0.7))
+    return d
+
+
+def ben_windows(name):
+    """windows of the actual audio; a 'pos' window the independent recogniser (asr_check.py -> build/msww/asr-check.json) did NOT hear Nova in
+    is not a positive (it is set aside as ignore: the label came from prompt order and the speaker said something else / nothing)."""
+    d = _ben_windows_raw(name)
+    p = os.path.join(M, 'asr-check.json')
+    if not os.path.exists(p) or name not in json.load(open(p)):
+        return d
+    ok = {(w['t0'], w['t1']) for w in json.load(open(p))[name]['windows'] if w['kind'] == 'pos' and w['status'] == 'CONFIRMED'}
+    keep = [w for w in d['pos'] if any(abs(w[0] - a) < 0.02 and abs(w[1] - b) < 0.02 for a, b in ok)]
+    d['ignore'] = d['ignore'] + [w for w in d['pos'] if w not in keep]
+    d['pos'] = keep
     return d
 
 

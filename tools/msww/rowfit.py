@@ -7,7 +7,6 @@ word's accept (found by multiple-instance refinement inside windows the word was
 The int8 row is then the same asymmetric per-row quantisation the head uses; forward() is the engine's exact integer path.
 """
 import numpy as np
-from scipy.optimize import minimize
 import spotter
 
 K_DEFAULT = 12
@@ -43,6 +42,7 @@ def forward(X, q, sw, zw, bias):
 
 def fit_logistic(X, y, wt, L, l2, v0=None, iters=200):
     """minimise sum wt*BCE(sigmoid(X v + c - L), y) + l2*|v|^2 ; returns v, c."""
+    from scipy.optimize import minimize
     n, d = X.shape
     def f(theta):
         v, c = theta[:d], theta[d]
@@ -59,6 +59,7 @@ def fit_logistic(X, y, wt, L, l2, v0=None, iters=200):
 def mil_fit(pos_windows, neg, k=K_DEFAULT, l2=1.0, rounds=4, decay=0.6, hard=0.02, neg_weight=1.0, pos_cycles=3):
     """pos_windows: list of (X[n,512], L[n], burst_mask[n]) one per positive window (word said somewhere inside);
     neg: (X, L) all negative cycles.  Returns (w, b) float row (applied to raw x)."""
+    from scipy.optimize import minimize  # noqa (fit_logistic imports it too)
     Xn, Ln = neg
     allX = np.concatenate([Xn] + [w[0] for w in pos_windows])
     mu, sd = allX.mean(0), allX.std(0) + 1e-3

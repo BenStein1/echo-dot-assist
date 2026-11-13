@@ -56,20 +56,31 @@ def _pos_windows(streams, names):
 
 
 def _neg_pool(streams, names):
-    Xs, Ls, Xh = [], [], []
+    """-> X, L, Xh, weight, segments [(start, end, sequential)].  A stream may carry 'wt' (per-cycle weight, a coreset's counts) and
+    'seq': False (cycles are not in time order: no temporal smoothing when mining)."""
+    Xs, Ls, Xh, Ws, seg, o = [], [], [], [], [], 0
     for n in names:
         s = streams[n]
         drop = ds.in_win(s['t'], s['win']['pos']) | ds.in_win(s['t'], s['win']['ignore'])
         Xs.append(s['X'][~drop]); Ls.append(s['L'][~drop])
+        Ws.append(s['wt'][~drop] if 'wt' in s else np.ones(int((~drop).sum())))
+        seg.append((o, o + int((~drop).sum()), s.get('seq', True))); o += int((~drop).sum())
         if 'Xh' in s: Xh.append(s['Xh'][~drop])
-    return np.concatenate(Xs), np.concatenate(Ls), (np.concatenate(Xh) if Xh else None)
+    return np.concatenate(Xs), np.concatenate(Ls), (np.concatenate(Xh) if Xh else None), np.concatenate(Ws), seg
+
+
+def _smooth_pool(p, seg, decay):
+    out = p.copy()
+    for a, b, q in seg:
+        if q: out[a:b] = spotter.smooth(p[a:b], decay)
+    return out
 
 
 def fit(streams, ben_names, neg_names, decay=0.6, l2=3.0, rounds=5, pos_cycles=3, pos_frac=0.05, mine_thr=0.08, mine_w=8.0,
         qat=0, seed=0):
     """-> dict(w, b, row) ; w,b float row on the raw 512-d input (z = x.w + b); row = quantised (q, s, zp, sums, bias)."""
     pw = _pos_windows(streams, ben_names)
-    Xn, Ln, Xnh = _neg_pool(streams, list(ben_names) + list(neg_names))
+    Xn, Ln, Xnh, Wn, seg = _neg_pool(streams, list(ben_names) + list(neg_names))
     allX = np.concatenate([Xn] + [p[1] for p in pw])
     mu, sd = allX.mean(0), allX.std(0) + 1e-3
     zn = ((Xn - mu) / sd).astype(np.float32)
@@ -90,9 +101,9 @@ def fit(streams, ben_names, neg_names, decay=0.6, l2=3.0, rounds=5, pos_cycles=3
         Lp = np.concatenate([pw[i][2][ix] for i, ix in enumerate(idx_p)])
         # hard-negative mining on the given negatives: every cycle of a smoothed score above mine_thr, and its neighbours
         zneg = zn @ v + c - Ln
-        sm = spotter.smooth(sigmoid(zneg), decay)
+        sm = _smooth_pool(sigmoid(zneg), seg, decay)
         hard = np.convolve((sm >= mine_thr).astype(float), np.ones(5), 'same') > 0
-        wn = np.where(hard, mine_w, 1.0)
+        wn = Wn * np.where(hard, mine_w, 1.0)
         X = np.concatenate([Xp, zn]); y = np.concatenate([np.ones(len(Xp)), np.zeros(len(zn))])
         wt = np.concatenate([np.full(len(Xp), pos_frac * wn.sum() / len(Xp)), wn])
         L = np.concatenate([Lp, Ln]).astype(np.float32)

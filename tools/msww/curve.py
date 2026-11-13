@@ -5,7 +5,7 @@ Per held-out recording (leave-one-recording-out over Ben's four) the row is fitt
 and a FIXED shared negative pool (the DEV corpus voices: 1.48 h of other speech, identical for every n), then measured on the held-out
 recording and on the HELD corpus voices.  Columns:
    real n      n real utterances, nothing else
-   aug N       the same real utterances plus augmented copies (gain / speed of those utterances) up to N positive clips in total
+   aug         the same n real utterances plus augmented copies of THOSE utterances (clips = 5n): not more examples, only more levels/speeds
    +own        the shared pool plus the user's own non-word speech (what an enrolling user can say during the session) as extra negatives
 The decay and accept are fixed (0.6 / 0.8, what the inner folds picked for most words) so that only the number of examples changes.
 
@@ -57,7 +57,12 @@ def run(a):
     S = loro.load(T.K, True)
     dev = [v for v in ds.DEV if v in S]
     held = [v for v in ds.HELD if v in S]
-    cells = [('real', 2, 2), ('real', 5, 5), ('real', 10, 10), ('aug', 5, 20), ('aug', 10, 20), ('aug', 10, 40), ('aug', 11, 200)]
+    # Independent spoken examples are the only thing that counts as n: Ben has 12 verified Nova utterances in 4 sessions, so a held-out
+    # recording leaves at most 8-10 to train on.  Augmented copies re-use the SAME utterances (gain/speed/noise), they are reported as
+    # "+aug" next to the n real examples they were made from and never as a larger n.
+    avail = min(sum(len(S[r]['win']['pos']) for r in ds.BEN if r != h) for h in ds.BEN)
+    cells = [(k, n, n if k == 'real' else 5 * n) for n in (2, 4, avail) for k in ('real', 'aug')]
+    cells = sorted(set(cells), key=lambda c: (c[1], c[0]))
     res = {}
     for own in (False, True):
         for kind, n_real, n_tot in cells:
@@ -65,7 +70,7 @@ def run(a):
             t0 = time.time()
             for h in ds.BEN:
                 tr = [n for n in ds.BEN if n != h]
-                for d in range(a.draws if n_tot < 200 else 1):
+                for d in range(a.draws if n_real < avail else 1):
                     rng = np.random.RandomState(1000 * d + 7)
                     P = draw(S, tr, min(n_real, sum(len(S[r]['win']['pos']) for r in tr)), n_tot, rng)
                     S2 = dict(S); S2.update(P)
@@ -77,8 +82,15 @@ def run(a):
                     acc['hit'] += tot['pos_hit']; acc['pos'] += tot['pos']
                     acc['fa'] += tot['dot_fa'] + tot['speech_fa'] + tot['reply_fa'] + tot['unl_fa']; acc['cfa'] += c['corpus_fa']
             res[(own, kind, n_real, n_tot)] = acc
-            print(f"{'+own' if own else 'shared'} {kind:4s} real={n_real:2d} total={n_tot:3d}: Nova {acc['hit']}/{acc['pos']}  Ben non-word FA {acc['fa']}  HELD-corpus FA {acc['cfa']} (0.78 h x folds)  [{time.time() - t0:.0f}s]", flush=True)
+            acc['draws_independent'] = 'same utterances re-drawn: the folds overlap, CIs are optimistic'
+            print(f"{'+own' if own else 'shared'} {kind:4s} independent examples n={n_real:2d} clips={n_tot:3d}{'(copies of those n)' if kind == 'aug' else ''}: Nova {acc['hit']}/{acc['pos']} {wilson(acc['hit'], acc['pos'])}  Ben non-word FA {acc['fa']}  HELD-corpus FA {acc['cfa']} (0.78 h x folds)  [{time.time() - t0:.0f}s]", flush=True)
     return res
+
+
+def wilson(k, n, z=1.96):
+    if not n: return '[n/a]'
+    p = k / n; d = 1 + z * z / n; c = p + z * z / (2 * n); r = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
+    return '95%% CI [%.2f,%.2f]' % ((c - r) / d, (c + r) / d)
 
 
 def fit_shared(S2, pos_names, dev):

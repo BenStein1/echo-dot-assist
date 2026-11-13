@@ -182,3 +182,56 @@ uses five clips per real example, not five independent utterances. The
 shared-only augmentation sharply increases false accepts; adding own
 negatives improves rejection but loses recall. There is no supported
 Amazon-level specificity or minutes-long enrollment recommendation yet.
+
+### Review closure, ignored-accept adjudication, held-out result — 2026-11-13
+
+**Review findings closed** (commit `2f8460f`; every experiment file committed, none discarded).
+`ondev_check.py` now fits the scipy reference on the dequantised pool (`Xdq`) and the same float word
+windows as the C trainer. `msww_row.c` uses seq codes 0 (pool cycle, not time-ordered: mined unsmoothed
+like `train._smooth_pool`), 1 (start of a time-ordered run, smoothed from s=0 like `spotter.smooth`) and
+2 (continues the run), and validates magic, counts, finite/bounded values, seq codes and parameters
+(NaN/inf, bad seq, truncation all exit 2). Host-only check, folds `live`/`rdot`: row corr(C, scipy)
+0.969/0.995 and identical Nova / Ben-FA / HELD-FA counts at accept 0.8 and 0.5. This is a host
+comparison, not on-device validation.
+
+**The two ignored `rdot` accepts (22.96 s, 27.76 s)** — `tools/msww/adjudicate.py`, listen-free. Reference
+bursts are Ben's single words from the other captures (labels by prompt/timeline, not ASR): Nova n=11,
+0.40±0.05 s, 52.9±1.9 dB, centroid 910±119 Hz; dot n=16, 0.32±0.07 s, 57.6±4.1 dB, 1114±119 Hz;
+leave-one-out 3-NN 25/27. Both bursts are 0.40 s, 53.7 dB, centroid 924 / 738 Hz, and are far closer to
+Nova than to dot (log-mel 3-NN distance 10.8 vs 25.8; 10.7 vs 23.7), exactly like the two ASR-confirmed
+Nova words in the same recording (17.4 vs 26.9; 15.0 vs 26.5). The old head's live "Dot, dot. Hello, dot."
+and "Hello, dot" false accepts (7.5, 26.52, 35.7 s) are dot-like (16.7/16.1/14.9 vs 23–29 to Nova), as are
+three prompted dots in `rdot`. Verdict: the two accepts are **very likely true Nova, not dot false
+accepts**, but this is acoustic similarity against a small single-speaker reference set, and it contradicts
+the (prompted, imperfect) ASR; nothing here is a human-verified transcript. They stay in the conservative
+FA column below until someone listens.
+
+**Final numbers** (engine replay, `NOVA`, working labels, `ignored_accepts` counted; old head =
+`build/msww/gate/old`, candidate = packaged candidate set / metadata-control replay):
+
+| Held-out corpus (6 HELD voices) | accepts | exposure | FA/h |
+|---|---|---|---|
+| old head | 15 (de-f-elderly 1, de-m-young 5, en-gb-f-elderly 5, en-ja-m-young 1, en-us-f-young 2, en-zh-f-young 1) | 0.781532 h | 19.2 |
+| candidate, 5 valid streams | 0 | 0.606524 h | 0 (rule-of-three 95% upper bound 4.9/h) |
+| candidate, + en-gb-f-elderly (bit-0-cleared control, different input) | 0 | 0.781532 h | 0 (upper bound 3.8/h) |
+
+| Ben recordings (candidate trained on all four) | old head | candidate |
+|---|---|---|
+| Nova windows hit (working labels) | 12/12 | 12/12 |
+| dot false accepts (live) | 3 (7.5, 26.52, 35.7) | 0 |
+| ignored accepts (live 72.0; rdot 22.96, 27.76) counted as FA | 3 | 2 (rdot only) |
+| total conservative non-Nova accepts | 6 | 2 |
+
+These Ben recordings are **training data for the candidate**, so that column is in-sample. The only
+out-of-sample Nova figure is leave-one-recording-out at the candidate's fixed accept 0.8 / decay 0.6
+(`recovered-original-loro.txt`, earlier labels, 15 windows): Nova 13/15 (w171828 3/4, w172114 4/4, live
+2/3, rdot 4/4), Ben non-word FA 0, HELD-corpus FA 0 in every fold. The inner folds picked accept 0.7 for
+the `live` fold, where that held-out recording gave 2 dot false accepts (26.72, 36.08 s).
+
+**Does the candidate eliminate the "Dot, dot. Hello, dot." false wake? Not demonstrated.** It does not
+fire on that phrase in the `live` recording it was trained on, and in the held-out `live` fold it gave
+0 false accepts at accept 0.8 but 2 at 0.7. Evidence is one speaker, one live session and a handful of
+phrases; the held corpus is clean speech with zero accepts, which does not contain that phrase pattern as
+far as these labels show. The result is a strong reduction against the old head on held-out speech
+(19.2/h to 0 in 0.78 h) and on Ben's own recordings, not proof of elimination. A fresh recording of the
+phrase that is not in training, replayed through the packaged engine, is the missing test.

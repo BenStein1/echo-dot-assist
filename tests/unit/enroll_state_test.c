@@ -34,8 +34,49 @@ int main(int argc, char **argv)
         if (rc) fprintf(stderr, "%s\n", error);
         return rc ? 1 : 0;
     }
+    char prompts[8][100];
+    for (int i = 0; i < 8; i++) {
+        prompt_text("Nova", 0, i, prompts[i], sizeof prompts[i]);
+        for (int k = 0; k < i; k++) assert(strcmp(prompts[i], prompts[k]));
+    }
+    assert(contains_phrase("Say HEY, Computer! now", "Hey Computer"));
+    assert(!contains_phrase("Supernova", "Nova"));
+    assert(contains_phrase("What time is it?", "time"));
+    for (int i = 0; i < 8; i++) { prompt_text("Hey there", 0, i, prompts[i], sizeof prompts[i]); assert(!contains_phrase(prompts[i], "Hey there")); }
     char dir[] = TEST_TMP "/enroll-state-XXXXXX", p[500], err[300] = ""; assert(mkdtemp(dir));
     setenv("HASSMIC_STATE", dir, 1); setenv("HASSMIC_MODELS", dir, 1);
+    /* Shared negatives fail closed for incompatible sources, bad splits and traversal. */
+    char corpus[500], model[500], data[500];
+    snprintf(corpus, sizeof corpus, "%s/corpus.json", dir); setenv("HASSMIC_ENROLL_NEGATIVES", corpus, 1);
+    snprintf(model, sizeof model, "%s/base.onnx", dir); put("base.onnx", "abc");
+    FILE *manifest = tmpfile(); assert(manifest); int counts[2] = {0};
+    assert(!corpus_negatives(manifest, dir, model, "Nova", counts)); /* absent is the documented limited check */
+    const char *description = "{\"source_sha256\":\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\"recordings\":[{\"path\":\"train.bin\",\"split\":\"train\",\"text\":\"ordinary speech\",\"speaker\":\"speaker A\"},{\"path\":\"test.bin\",\"split\":\"test\",\"text\":\"different sentence\",\"speaker\":\"speaker B\"}]}";
+    put("corpus.json", description);
+    const char *bins[] = {"train.bin", "test.bin"};
+    for (int i = 0; i < 2; i++) {
+        snprintf(data, sizeof data, "%s/%s", dir, bins[i]); FILE *bin = fopen(data, "wb"); assert(bin);
+        uint32_t h[] = {0x46595250, 1, 25, 100}; assert(fwrite(h, 1, 16, bin) == 16);
+        assert(!fseek(bin, 16 + 31*10000 - 1, SEEK_SET)); assert(fputc(i + 1, bin) == i + 1); assert(!fclose(bin));
+    }
+    assert(corpus_negatives(manifest, dir, model, "Nova", counts) == 2 && counts[0] == 1 && counts[1] == 1);
+    char duplicate[2048]; snprintf(duplicate, sizeof duplicate, "%s", description);
+    char *test_text = strstr(duplicate, "different sentence"); assert(test_text);
+    memcpy(test_text, "ORDINARY, SPEECH  ", strlen("different sentence"));
+    put("corpus.json", duplicate); counts[0] = counts[1] = 0;
+    assert(corpus_negatives(manifest, dir, model, "Nova", counts) < 0); /* normalized text overlaps */
+    snprintf(duplicate, sizeof duplicate, "%s", description);
+    char *test_speaker = strstr(duplicate, "speaker B"); assert(test_speaker); test_speaker[8] = 'A';
+    put("corpus.json", duplicate); counts[0] = counts[1] = 0;
+    assert(corpus_negatives(manifest, dir, model, "Nova", counts) < 0); /* speaker crosses split */
+    put("corpus.json", description);
+    snprintf(data, sizeof data, "%s/test.bin", dir); FILE *bin = fopen(data, "r+b"); assert(bin);
+    assert(!fseek(bin, -1, SEEK_END)); assert(fputc(1, bin) == 1); assert(!fclose(bin)); counts[0] = counts[1] = 0;
+    assert(corpus_negatives(manifest, dir, model, "Nova", counts) < 0); /* same features under different filenames */
+    counts[0] = counts[1] = 0;
+    assert(corpus_negatives(manifest, dir, model, "ordinary speech", counts) < 0); /* no remaining train split */
+    put("base.onnx", "wrong model"); counts[0] = counts[1] = 0;
+    assert(corpus_negatives(manifest, dir, model, "Nova", counts) < 0); assert(!fclose(manifest));
     snprintf(p, sizeof p, "%s/installer.lock", dir); setenv("HASSMIC_ARTIFACT_LOCK", p, 1);
     int fence = open(p, O_CREAT | O_RDWR, 0644); assert(fence >= 0);
     snprintf(p, sizeof p, "%s/artifacts", dir); assert(!mkdir(p, 0700));

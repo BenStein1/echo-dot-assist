@@ -24,4 +24,6 @@ int enroll_strip_named(char *text, size_t *len, size_t cap, const char *name);
  * place; a checksum.txt that names this exact content; the mark file with NOTE.  0, or -1 with the reason in ERR
  * (DEST is removed again). */
 int enroll_make_set(const char *base, const char *candidate, const char *dest, const char *key, const char *note, char *err, size_t errsz);
+/* Align custom-set acceptance in every playback/alarm state to the trainer's 0.923. */
+int enroll_thresholds(char *text, size_t *len, size_t cap);
 #endif

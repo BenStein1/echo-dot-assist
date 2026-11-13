@@ -57,6 +57,10 @@ int main(void)
     { char bad[] = "{\"s\":["; size_t l = strlen(bad); assert(enroll_strip_named(bad, &l, sizeof bad, "STOP") < 0); }
 
     /* a stand-in for Amazon's set: the files that matter, one folder deeper */
+    char thresholds[512] = "{\"notify-threshold\":0.69,\"overrides\":[{\"accept-threshold\":0.8},{\"accept-threshold\":0.864}],\"accept-threshold\":0.9230}";
+    size_t threshold_len = strlen(thresholds);
+    assert(enroll_thresholds(thresholds, &threshold_len, sizeof thresholds) == 3);
+    assert(!strcmp(thresholds, "{\"notify-threshold\":0.69,\"overrides\":[{\"accept-threshold\":0.923},{\"accept-threshold\":0.923}],\"accept-threshold\":0.923}"));
     char root[] = "/tmp/enroll_pkg_XXXXXX"; assert(mkdtemp(root));
     char base[300], dest[300], cand[300]; snprintf(base, sizeof base, "%s/base", root); snprintf(dest, sizeof dest, "%s/out", root); snprintf(cand, sizeof cand, "%s/cand.onnx", root);
     mkdir(base, 0755);

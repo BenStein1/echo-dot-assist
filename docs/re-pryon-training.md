@@ -154,3 +154,95 @@ confirmation succeeded after it completed. The ARM state regression also ran as 
 Private reports and the engine trace are in ignored `build/review2-echo/`; no proprietary model or recording is added
 to Git. The active wake-word selection was compared with its preserved copy, and no production service was restarted.
 This validates the installer/state transitions on hardware; it is not a fresh microphone-enrollment or accuracy trial.
+
+
+## Shared false-wake rejection and offline refinement
+
+Enrollment negative prompts no longer cycle through six phrases: the two held-out
+negative prompts have different text from training, including for a single-word
+name. A prompt containing the selected wake phrase is excluded. This is still a
+small personal enrollment check, not a false-wakes-per-hour benchmark.
+
+A reusable private negative corpus can now supplement **every** chosen wake word.
+Place it at `/data/local/hassmic/enroll-negatives/` (or set
+`HASSMIC_ENROLL_NEGATIVES` to its manifest). The manifest is an object with
+`source_sha256` (SHA-256 of the stock ONNX used for feature extraction) and
+`recordings`, an array of `{path, split, text}`. Paths are flat feature filenames;
+`split` is `train` or `test`, and `text` is the actual transcript. The input files
+are native `pryon_extract` PRYF features, 31–180 cycles
+per clip. At most sixteen clips per split keep the extra training feature arrays
+below 60 MB. Holdout features remain unopened by the optimizer until freezing.
+Native context-preserving windows from continuous speech are preferred over only
+silence-padded clips. Transcripts containing the chosen phrase are excluded; at least one usable clip
+in each split must remain. A present but malformed or encoder-incompatible corpus
+fails training, rather than silently omitting the corpus. The runtime loader also
+rejects cross-split normalized transcript/speaker overlap and byte-identical features
+under different filenames. An absent corpus leaves
+the small personal check in use; the package note records `shared-negatives=0/0`.
+
+Prepare a bundle from a trainer feature manifest with accurate `text` fields and
+optional `speaker` fields (speaker and transcript sets must be disjoint across
+train/test). The helper refuses duplicate feature audio and existing output paths:
+
+```sh
+python3 tools/pryon-native/prepare_negatives.py STOCK.onnx features.json PRIVATE_OUTPUT
+```
+
+Feature extraction must use the same stock encoder; generate the features with
+`pryon_extract STOCK_SET/pryon.manifest PADDED.raw FEATURES.bin`. Keep native
+features, Amazon-derived model sets and personal audio private and out of Git.
+The existing synthetic corpus is a useful source of varied speaker negatives;
+its noncommercial licence in `testdata/corpus/README.md` applies. A synthetic
+corpus alone does not establish household false-wake performance.
+
+For an existing custom word, copy its installed ONNX and prepare a flat trainer
+manifest of native features: positives and broad negatives, with `label` 1/0 and
+`split` train/test. Use fresh positives and disjoint negative speakers/transcripts
+for evaluation; do not split augmentations of one source clip across both sets.
+Refine the existing head, then package it using the same policy as enrollment:
+
+```sh
+make build/pryon_train-host build/pryon_pack-host
+build/pryon_train-host CURRENT.onnx features.json CANDIDATE.onnx 1600
+build/pryon_pack-host STOCK_SET CANDIDATE.onnx OUTPUT_SET KEYWORD 'offline refinement'
+```
+
+The candidate path and package directory must not already exist. Evaluate the
+packaged model with `pryon_test -m OUTPUT_SET/pryon.manifest recording.raw`, also
+with `-p AudioPlayerState=1`, `-p audio_playback=1`, and `-p AlarmState=1`. Custom
+packages now use **0.923 in every state**, matching the training evaluator rather
+than inheriting Alexa's lower playback/alarm thresholds. The notify threshold is
+unchanged. This fixes the state-dependent calibration mismatch; it is not a
+substitute for broad negative training. Existing installed sets are not silently
+rewritten: refinement/repackaging is required.
+
+**Deployment gate:** replay full continuous held-out recordings through the actual
+packaged native engine, not only isolated feature clips. A candidate that passes
+isolated tests but adds false accepts in continuous playback must be rejected.
+Continuous context changes encoder state and can expose failures hidden by silence
+padding. Do not label a stream held out if its failure windows were used for tuning.
+
+Keep false-accept counts and evaluated negative-audio duration alongside held-out
+wake-word recall. Mine high-scoring negative windows from a development corpus,
+never the final evaluation stream. A short scripted test with zero false wakes
+is not evidence of a low hourly false-wake rate.
+
+
+Create context-preserving feature windows without resetting the encoder between
+utterances: first extract **the complete continuous recording** with the native
+extractor. Write events as `{source, start, end, label, split, text, speaker?}` in
+JSON, where `source` is the full PRYF file relative to that manifest and times
+mark the supervised interval. Then run:
+
+```sh
+python3 tools/pryon-native/stream_windows.py events.json PRIVATE_WINDOWS
+```
+
+The helper retains thirty preceding 60ms cycles (1.8s) and rotates the 25 recurrent
+lane rows by the crop's global starting phase. Simply cutting the feature bytes
+without rotating lane rows changes the head's score. The output `features.json`
+can feed the trainer or `prepare_negatives.py`. Events before 1.8s, out-of-stream
+times and clips beyond the enrollment memory budget are refused. Supply explicit
+labels/transcripts; the helper never guesses what was said. Keep development and
+final-evaluation source recordings separate, including context that crosses event
+boundaries. The lane-phase regression is `make unit-stream_windows`.

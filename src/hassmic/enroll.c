@@ -24,6 +24,8 @@
 #include "artifacts.h"
 #include "enroll_pkg.h"
 #include "statefile.h"
+#include "json.h"
+#include "hash.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -213,19 +215,47 @@ static void jesc(char *o, size_t cap, const char *s)
 
 /* ------------------------------------------------------------------------------------------------------ recording */
 
-static const char *const generic[] = { "Hey there", "What time is it?", "Set a timer", "Turn on the lights", "Stop", "This is ordinary conversation" };
+/* Keep the last two prompts distinct in content, not repetitions of the training phrases. */
+static const char *const generic[] = {
+    "Hey there", "What time is it?", "Set a timer", "Turn on the lights", "Stop", "This is ordinary conversation",
+    "The window is open", "I left my coat upstairs", "Bring a glass of water", "We should leave after lunch",
+    "There is a message on the screen", "Someone is waiting outside", "Please pass the salt", "Where did you put the keys?",
+    "The rain has stopped", "My shoes are by the door", "We bought some fresh fruit", "I enjoyed the film last night",
+    "That sounds like a good idea", "The train arrives in ten minutes", "Put the book on the table", "Dinner will be ready soon"
+};
 
-/* The words the kind of recording asks for: the word itself, or (the others) its first and last parts, then everyday phrases */
+/* Mechanical transcript exclusion: punctuation and case must not hide the intended wake phrase in a negative. */
+static void normalized(const char *in, char *out, size_t cap)
+{
+    size_t n = 0; int gap = 0;
+    for (; *in && n + 1 < cap; in++) {
+        unsigned char c = (unsigned char)*in;
+        if (isalnum(c)) { if (gap && n + 2 < cap) out[n++] = ' '; out[n++] = (char)tolower(c); gap = 0; }
+        else if (n) gap = 1;
+    }
+    out[n] = 0;
+}
+
+static int contains_phrase(const char *text, const char *phrase)
+{
+    char t[1024], p[100]; normalized(text, t, sizeof t); normalized(phrase, p, sizeof p);
+    size_t n = strlen(p); if (!n) return 1;
+    for (const char *s = t; (s = strstr(s, p)); s++)
+        if ((s == t || s[-1] == ' ') && (!s[n] || s[n] == ' ')) return 1;
+    return 0;
+}
+
 static void prompt_text(const char *phrase, int label, int i, char *out, size_t cap)
 {
-    char parts[2][96] = { "", "" }; const char *sp = strchr(phrase, ' '); const char *last = strrchr(phrase, ' ');
+    char parts[2][96] = { "", "" }; const char *sp = strchr(phrase, ' '), *last = strrchr(phrase, ' ');
     if (label) { snprintf(out, cap, "%s", phrase); return; }
     if (sp) { snprintf(parts[0], sizeof parts[0], "%s", sp + 1); snprintf(parts[1], sizeof parts[1], "%.*s", (int)(last - phrase), phrase); }
-    const char *pool[8]; int n = 0;
-    if (parts[0][0] && strcasecmp(parts[0], phrase)) pool[n++] = parts[0];
-    if (parts[1][0] && strcasecmp(parts[1], phrase)) pool[n++] = parts[1];
-    for (size_t k = 0; k < sizeof generic / sizeof *generic; k++) pool[n++] = generic[k];
-    snprintf(out, cap, "%s", pool[i % n]);
+    const char *pool[32]; int n = 0;
+    if (parts[0][0] && !contains_phrase(parts[0], phrase)) pool[n++] = parts[0];
+    if (parts[1][0] && !contains_phrase(parts[1], phrase) && strcmp(parts[0], parts[1])) pool[n++] = parts[1];
+    for (size_t k = 0; k < sizeof generic / sizeof *generic; k++)
+        if (!contains_phrase(generic[k], phrase)) pool[n++] = generic[k];
+    snprintf(out, cap, "%s", i < n ? pool[i] : "Speak a different sentence without your wake word");
 }
 
 static int clip_ok(const int16_t *pcm, size_t n, char *why, size_t cap)
@@ -392,6 +422,83 @@ static int install_result(void)
     return 1;
 }
 
+/* Reusable negatives are private native features, never model assets committed to source. The corpus is bounded:
+ * at most 16 training clips of 180 cycles add less than 60 MB to the trainer's resident feature arrays. */
+static int corpus_negatives(FILE *manifest, const char *dir, const char *model, const char *phrase, int counts[2])
+{
+    const char *path = env_or("HASSMIC_ENROLL_NEGATIVES", "/data/local/hassmic/enroll-negatives/manifest.json");
+    FILE *f = fopen(path, "rb"); if (!f) return errno == ENOENT ? 0 : -1;
+    char text[32769], root[1024], expected[65], actual[65];
+    size_t n = fread(text, 1, sizeof text - 1, f); int bad = ferror(f) || !feof(f); fclose(f);
+    if (bad || n == sizeof text - 1 || strlen(path) >= sizeof root) return -1;
+    text[n] = 0; snprintf(root, sizeof root, "%s", path); char *slash = strrchr(root, '/');
+    if (slash) *slash = 0; else snprintf(root, sizeof root, ".");
+    struct json j = {0}; if (json_parse(&j, text, n)) { json_free(&j); return -1; }
+    int rows = json_get(&j, 0, "recordings"), total = json_len(&j, rows);
+    if (json_type(&j, rows) != J_ARR || total < 2 || total > 32 ||
+        !json_str(&j, json_get(&j, 0, "source_sha256"), expected, sizeof expected) || strlen(expected) != 64 ||
+        json_type(&j, json_get(&j, 0, "source_sha256")) != J_STR || j.t[json_get(&j, 0, "source_sha256")].end - j.t[json_get(&j, 0, "source_sha256")].start != 64) { json_free(&j); return -1; }
+    struct sha256 hash; uint8_t dg[32], buf[8192]; sha256_init(&hash);
+    f = fopen(model, "rb"); if (!f) { json_free(&j); return -1; }
+    while ((n = fread(buf, 1, sizeof buf, f))) sha256_update(&hash, buf, n);
+    bad = ferror(f); fclose(f); sha256_final(&hash, dg);
+    for (int k = 0; k < 32; k++) snprintf(actual + 2*k, 3, "%02x", dg[k]);
+    if (bad || strcmp(actual, expected)) { json_free(&j); return -1; }
+    int index = 0, seen = 0; char names[32][128], texts[32][1024], speakers[32][128]; int splits[32]; uint8_t digests[32][32];
+    JSON_EACH(&j, rows, row) {
+        char name[128], split[16], transcript[1024], speaker[128] = "", source[1200], dest[1200];
+        if (!json_str(&j, json_get(&j, row, "path"), name, sizeof name) || !*name || strstr(name, "..") ||
+            !json_str(&j, json_get(&j, row, "split"), split, sizeof split) || (strcmp(split, "train") && strcmp(split, "test")) ||
+            !json_str(&j, json_get(&j, row, "text"), transcript, sizeof transcript) || !*transcript) { bad = 1; break; }
+        int stoken = json_get(&j, row, "speaker");
+        if (json_type(&j, json_get(&j, row, "path")) != J_STR || json_type(&j, json_get(&j, row, "split")) != J_STR ||
+            json_type(&j, json_get(&j, row, "text")) != J_STR || (stoken >= 0 && (json_type(&j, stoken) != J_STR ||
+            j.t[stoken].end - j.t[stoken].start >= (int)sizeof speaker || !json_str(&j, stoken, speaker, sizeof speaker)))) { bad = 1; break; }
+        for (const char *p = name; *p; p++) if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') bad = 1;
+        if (j.t[json_get(&j, row, "path")].end - j.t[json_get(&j, row, "path")].start >= (int)sizeof name ||
+            j.t[json_get(&j, row, "text")].end - j.t[json_get(&j, row, "text")].start >= (int)sizeof transcript) bad = 1;
+        for (int k = 0; k < seen; k++) if (!strcmp(names[k], name)) bad = 1;
+        if (bad) break;
+        snprintf(names[seen++], sizeof names[0], "%s", name);
+        if (contains_phrase(transcript, phrase)) continue;
+        int held = !strcmp(split, "test"); if (++counts[held] > 16) { bad = 1; break; }
+        char normalized_text[1024]; normalized(transcript, normalized_text, sizeof normalized_text);
+        if (!*normalized_text) { bad = 1; break; }
+        for (int k = 0; k < index; k++) if (splits[k] != held &&
+            (!strcmp(texts[k], normalized_text) || (*speaker && !strcmp(speakers[k], speaker)))) bad = 1;
+        if (bad) break;
+        snprintf(texts[index], sizeof texts[0], "%s", normalized_text);
+        snprintf(speakers[index], sizeof speakers[0], "%s", speaker); splits[index] = held;
+        snprintf(source, sizeof source, "%s/%s", root, name);
+        snprintf(dest, sizeof dest, "%s/negative-%02d.bin", dir, index);
+        f = fopen(source, "rb"); if (!f) { bad = 1; break; }
+        /* Validate the complete header and bounded length before copying. */
+        uint32_t header[4]; struct stat st;
+        if (fstat(fileno(f), &st) || st.st_size < 16 + 31*10000 || st.st_size > 16 + 180*10000 ||
+            (st.st_size - 16) % 10000 || fread(header, 1, 16, f) != 16 || header[0] != 0x46595250 ||
+            header[1] != 1 || header[2] != 25 || header[3] != 100) { fclose(f); bad = 1; break; }
+        FILE *out = fopen(dest, "wb"); if (!out) { fclose(f); bad = 1; break; }
+        sha256_init(&hash); sha256_update(&hash, header, 16);
+        bad = fwrite(header, 1, 16, out) != 16;
+        size_t remaining = (size_t)st.st_size - 16;
+        while (!bad && remaining) {
+            size_t want = remaining < sizeof buf ? remaining : sizeof buf;
+            n = fread(buf, 1, want, f); sha256_update(&hash, buf, n);
+            if (n != want || fwrite(buf, 1, n, out) != n) bad = 1;
+            remaining -= n;
+        }
+        if (fgetc(f) != EOF || ferror(f)) bad = 1;
+        fclose(f); if (fclose(out)) bad = 1;
+        sha256_final(&hash, digests[index]);
+        for (int k = 0; k < index; k++) if (!memcmp(digests[k], digests[index], 32)) bad = 1;
+        if (bad) break;
+        fprintf(manifest, ",{\"path\":\"negative-%02d.bin\",\"label\":0,\"split\":\"%s\"}", index++, split);
+    }
+    json_free(&j);
+    if (bad || !counts[0] || !counts[1]) return -1;
+    return index;
+}
+
 static int job(char *dir)
 {
     char ext[300], trn[300], bdir[300], p[500], pad[400], feat[400], manifest[400], model[400], cand[400], f1[300], f2[300];
@@ -412,7 +519,10 @@ static int job(char *dir)
         int label = i < PER_CLASS, k = label ? i : i - PER_CLASS;
         fprintf(m, "%s{\"path\":\"features-%02d.bin\",\"label\":%d,\"split\":\"%s\"}", i ? "," : "", i, label, k >= PER_CLASS - HELD_OUT ? "test" : "train");
     }
-    fputs("]\n", m); fclose(m);
+    int negatives[2] = {0};
+    int extra = corpus_negatives(m, dir, model, S.phrase, negatives);
+    fputs("]\n", m); int manifest_bad = ferror(m); if (fclose(m)) manifest_bad = 1;
+    if (extra < 0 || manifest_bad) { finish(ST_FAILED, "", "The shared negative corpus is invalid, incompatible, or has no usable train/test split."); return -1; }
 
     for (int i = 0; i < CLIPS; i++) {
         if (cancelled()) return -1;
@@ -471,7 +581,7 @@ static int job(char *dir)
     if (art_room(24L << 20, err, sizeof err)) { finish(ST_FAILED, "", err); return -1; }
     art_unstage(artid);
     if (art_stage_dir(artid, f1, sizeof f1)) { finish(ST_FAILED, "", "Cannot stage the wake word set."); return -1; }
-    snprintf(note, sizeof note, "phrase=%s\nkeyword=%s\nheld-out=%d/%d,%d/%d\n", S.phrase, S.key, e4[0], e4[0] + e4[1], e4[3], e4[2] + e4[3]);
+    snprintf(note, sizeof note, "phrase=%s\nkeyword=%s\nheld-out=%d/%d,%d/%d\nshared-negatives=%d/%d\n", S.phrase, S.key, e4[0], e4[0] + e4[1], e4[3], e4[2] + e4[3], negatives[0], negatives[1]);
     snprintf(f2, sizeof f2, "%s", f1);
     { char *slash = strrchr(f2, '/'); if (slash) { *slash = 0; mkdir(f2, 0755); } }
     if (enroll_make_set(bdir, cand, f1, S.key, note, err, sizeof err)) { finish(ST_FAILED, "", err); return -1; }

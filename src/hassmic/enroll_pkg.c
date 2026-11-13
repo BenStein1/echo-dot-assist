@@ -112,6 +112,27 @@ static int rename_word(char *text, size_t *len, size_t cap, const char *key)
     return n;
 }
 
+/* Match every runtime state to the threshold used by pq_accepts. Alexa's lower playback/alarm values were
+ * calibrated for Alexa's head, not a newly fitted custom head. Leave notify thresholds and unrelated settings alone. */
+int enroll_thresholds(char *text, size_t *len, size_t cap)
+{
+    struct json j = {0}; if (json_parse(&j, text, *len)) { json_free(&j); return -1; }
+    struct range ranges[MAX_RANGES]; int changed = 0;
+    for (int k = 0; k < j.n; k++) if (json_type(&j, k) == J_OBJ) {
+        int v = json_get(&j, k, "accept-threshold"); if (v < 0) continue;
+        if (changed == MAX_RANGES || json_type(&j, v) != J_NUM || json_num(&j, v, -1) < 0 || json_num(&j, v, 2) > 1) { json_free(&j); return -1; }
+        ranges[changed++] = (struct range){j.t[v].start, j.t[v].end};
+    }
+    qsort(ranges, (size_t)changed, sizeof *ranges, cmp_range);
+    for (int k = changed - 1; k >= 0; k--) {
+        size_t from = (size_t)ranges[k].from, to = (size_t)ranges[k].to;
+        if (*len - (to - from) + 5 + 1 > cap) { json_free(&j); return -1; }
+        memmove(text + from + 5, text + to, *len - to + 1);
+        memcpy(text + from, "0.923", 5); *len = *len - (to - from) + 5;
+    }
+    json_free(&j); return changed;
+}
+
 /* ------------------------------------------------------------------------------------------------------- files */
 
 static int read_all(const char *path, char **out, size_t *len, size_t max)
@@ -217,6 +238,7 @@ int enroll_make_set(const char *base, const char *candidate, const char *dest, c
         if (read_all(to, &text, &len, CONF_MAX)) { say(err, errsz, "the Echo's own wake word set lacks a file this expects"); goto out; }
         int stop = c < 2 ? enroll_strip_named(text, &len, len + 4096, "STOP") : 0, renamed = -1;
         if (stop >= 0) renamed = rename_word(text, &len, len + 4096, key);
+        if (c == 0 && renamed > 0 && enroll_thresholds(text, &len, len + 4096) < 0) renamed = -1;
         if (stop < 0 || (c < 2 && !stop) || renamed < 1 || strstr(text, "\"STOP\"")) {
             free(text); text = NULL; say(err, errsz, "the Echo's own wake word set is not Amazon's Alexa and Stop set"); goto out;
         }

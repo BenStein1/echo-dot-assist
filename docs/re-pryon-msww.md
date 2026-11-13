@@ -1,6 +1,6 @@
 # Amazon's multi-word wake word sets (msww): how five words share one engine
 
-Status: **findings from reading files on the Dot, plus a plan. Nothing here is trained or verified yet.**
+Status: **research prototype; NOT accepted for deployment. See recovery review below.**
 Source: `/data/local/hassmic/models/{alexa,amazon,computer,echo,ziggy}-en-US/` on the Dot (Amazon's downloaded model sets;
 a copy of `computer-en-US` was pulled to `/tmp/amz/computer` while researching). Amazon-derived: keep out of git.
 
@@ -53,3 +53,44 @@ should separate near words such as "dot" from "Nova" much better.
    streams, measure Nova vs dot separation against the old head.
 5. If it works: trainer (row only), packer (stock set + edited decoder + spotter + words + decoders), replay gate through the packaged engine.
 6. Minimise the enrollment: accuracy against the number of positive samples and the shared negative set. Goal: a couple of minutes, not hours.
+
+## Recovery review — 2026-11-12
+
+Saved code through `acd6a59` implements the row-training prototype. The completed
+nested leave-one-recording-out run (`build/msww/recovered-original-loro.json`,
+ignored) reports **12/15 Nova detections and 2/31 dot-type false accepts**, with
+0/5 other-speech false accepts. Each of four fitted rows has zero simulated
+accepts on the **same** 0.78-hour, six-voice held-out corpus. This is not 3.12
+unique hours, and not proof of a production false-accept rate.
+
+These numbers remain provisional:
+
+- `labels.py` detects acoustic bursts but assigns word identity using prompt
+  timestamps/order, spectral heuristics, and manual timeline selections. It
+  does **not** independently transcribe/listen to the words; interrupted prompts
+  can still invalidate labels. `rdot` also uses assumed post-dot word order.
+- `gate.py` ignores subprocess return codes, discards stderr, and caches only
+  by stream basename. Failed, incomplete, stale, or backlog-dropping runs must
+  not count as a successful gate. A zero-event run is legitimate (`pryon_test`
+  returns 3) only with positive evidence of complete input processing. Capture
+  stderr, compare pushed samples with input length, reject dropped audio,
+  and bind cached evidence to the model, input, and runtime options.
+- `candidate.py gate` prints disagreement but does not fail on it; it compares
+  event times/counts, not scores, and does not enforce accuracy/false-accept
+  criteria. A fitted candidate tested on its training recordings is only a
+  packaging/parity check, not held-out accuracy evidence.
+- `curve.py` has only 15 recorded positive windows total. Its 20/40 sample
+  conditions use augmentation, not 20/40 independent spoken examples. It
+  cannot yet establish a reliable enrollment-time recommendation.
+
+Decision: **do not deploy; acceptance failed**. Correct the replay gate, verify
+semantic labels independently, and obtain independent review before making
+performance claims. Keep HELD speech out of further tuning; any inspection-
+led changes require fresh final evaluation audio. No new recording campaign
+is justified by these results yet.
+
+Independent GPT-6 Luna review was attempted via Gateway and native Codex; both
+failed with missing-bearer 401 errors. The settled worker also exhausted its
+Anthropic quota and failed LiteLLM authentication. Configured fallback lists
+are not evidence of a working provider. These are outstanding review/runtime
+blockers, not a completed review. Nothing was deployed to the Dot.

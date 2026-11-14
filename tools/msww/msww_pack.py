@@ -37,7 +37,23 @@ def read_rows(path):
     return {k: ini[v] for k, v in ROW.items()}
 
 
-def pack(src, dst, class_index, row, word, replace='COMPUTER', accept=0.523, notify=0.12, decay=0.6, lock=100, kill=()):
+def single_word_configs(kw, op, word):
+    """Keep competing network classes, but expose only this word to the daemon.
+
+    wake_pryon forwards every accepted keyword, not only the directory's name.
+    Removing only operation rules is insufficient: the other spotters still emit.
+    """
+    spotters = [s for s in kw['keyword-orchestra']['keyword-spotters'] if s['name'] == word]
+    if len(spotters) != 1:
+        raise ValueError('single-word package needs exactly one target spotter: ' + word)
+    kw['keyword-orchestra']['keyword-spotters'] = spotters
+    for state in op.values():
+        if isinstance(state, dict) and 'rules' in state:
+            state['rules'] = [r for r in state['rules'] if r['name'] == word]
+    return kw, op
+
+
+def pack(src, dst, class_index, row, word, replace='COMPUTER', accept=0.523, notify=0.12, decay=0.6, lock=100, kill=(), single_word=False):
     """row: dict(q=int8[512], s=float, zp=int, sums=int, bias=float). kill: other classes whose row is silenced (logit -20),
     so that they do not compete in the softmax with the new word."""
     if os.path.exists(dst):
@@ -77,11 +93,14 @@ def pack(src, dst, class_index, row, word, replace='COMPUTER', accept=0.523, not
             for o in th.get('overrides', []):
                 o['accept-threshold'] = accept
             sp['spotter']['lock-period'] = lock
-    json.dump(kw, open(kwp, 'w'), indent=2)
     for f in ['BDPGeneratedFiles/op.cfg.json']:
         p = os.path.join(dst, f)
         t = open(p).read().replace('"%s"' % replace, '"%s"' % word)
-        open(p, 'w').write(t)
+        op = json.loads(t)
+        if single_word:
+            kw, op = single_word_configs(kw, op, word)
+        json.dump(op, open(p, 'w'), indent=2)
+    json.dump(kw, open(kwp, 'w'), indent=2)
     for f in ['BDPGeneratedFiles/words.shrunk.txt', 'encoder/words.shrunk.txt']:
         p = os.path.join(dst, f)
         if os.path.exists(p):

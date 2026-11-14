@@ -12,6 +12,7 @@ import argparse, json, os, sys
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 import ds, train as T, loro, gate, msww_pack
+from feat import read_results
 
 
 def cmd_fit(a):
@@ -41,7 +42,7 @@ def load_model(path):
 def cmd_pack(a):
     j, m = load_model(a.model)
     msww_pack.pack(a.src, a.dst, j['k'], dict(q=m['row']['q'], s=m['row']['s'], zp=m['row']['zp'], sums=m['row']['sums'], bias=m['row']['bias']),
-                   j['word'], accept=j['accept'], notify=j['notify'], decay=j['decay'])
+                   j['word'], accept=j['accept'], notify=j['notify'], decay=j['decay'], single_word=True)
     print('packed', a.dst)
 
 
@@ -54,18 +55,20 @@ def cmd_gate(a):
     res = {}
     for r in raws:
         n = os.path.basename(r)[:-4]
-        ev = [(t, sc) for t, sc, ty in gate.events(os.path.join(outdir, n + '.res'), j['word']) if ty == 2]
+        result_path = os.path.join(outdir, n + '.res')
+        unexpected = [v['name'] for v in read_results(result_path) if v['type'] == 2 and v['name'].upper() != j['word'].upper()]
+        ev = [(t, sc) for t, sc, ty in gate.events(result_path, j['word']) if ty == 2]
         s = S[n]
         sim = T.events_of(s, m, j['decay'], j['accept'], True)
         cat = T.categorize(s, ev)
-        res[n] = dict(engine=ev, sim=sim, cat={k: v for k, v in cat.items()})
+        res[n] = dict(engine=ev, sim=sim, unexpected_accepts=unexpected, cat={k: v for k, v in cat.items()})
         agree = len(ev) == len(sim) and all(abs(e[0] - q[0]) < 1 / 16000 and abs(e[1] - q[1]) < 1e-5 for e, q in zip(ev, sim))
         res[n]['agree'] = agree
         print(f"{n:16s} engine accepts {len(ev)} sim {len(sim)} agree={agree}  pos {cat['pos_hit']}/{cat['pos']} dot_fa {cat['dot_fa']} speech_fa {cat['speech_fa']} reply_fa {cat['reply_fa']} unl {cat['unl_fa']} corpus_fa {cat['corpus_fa']} ignored_accepts {cat['ign']}")
     json.dump(res, open(a.out, 'w'), indent=1, default=str)
-    bad = [n for n, v in res.items() if not v['agree']]
+    bad = [n for n, v in res.items() if not v['agree'] or v['unexpected_accepts']]
     if bad:
-        sys.exit('GATE FAILED: engine and simulation disagree on accept count, time or score for ' + ', '.join(bad))
+        sys.exit('GATE FAILED: unexpected keyword or engine/simulation accept count, time or score mismatch for ' + ', '.join(bad))
 
 
 if __name__ == '__main__':

@@ -235,3 +235,58 @@ phrases; the held corpus is clean speech with zero accepts, which does not conta
 far as these labels show. The result is a strong reduction against the old head on held-out speech
 (19.2/h to 0 in 0.78 h) and on Ben's own recordings, not proof of elimination. A fresh recording of the
 phrase that is not in training, replayed through the packaged engine, is the missing test.
+
+### Target-only trial packaging — 2026-11-13
+
+Ben's real-room report that **hello still wakes the Echo** fails acceptance of the
+deployed old-head tuning. The newer MSWW candidate above has not been deployed;
+the two attempts must not be conflated. Live settings inspection found only
+`nova-en-US` selected (no second wake word), on version `2026.11.13.003932`.
+
+Before a controlled MSWW trial, candidate packaging now keeps only the `NOVA`
+spotter and its operation-state rules. Previously it retained stock spotters:
+the daemon filters non-selected words, but `STOP` is exempt and can stop a
+request. Decoder classes/rows are **not** removed: they still compete in the
+softmax. The low-level packer keeps its multiword default for research callers;
+`candidate.py pack` requests a single-word package. Its gate also rejects any
+accepted non-target keyword instead of silently discarding those events.
+
+Runnable checks and package construction (Amazon-derived output stays ignored):
+
+```sh
+python3 tools/msww/test_pack.py
+python3 tools/msww/test_gate.py
+build/pryon-review-venv/bin/python tools/msww/candidate.py pack \
+  build/msww/cand-nova.json build/msww/computer-en-US build/msww/nova-only-trial-set
+OPENBLAS_NUM_THREADS=1 build/pryon-review-venv/bin/python tools/msww/candidate.py gate \
+  build/msww/cand-nova.json build/msww/nova-only-trial-set \
+  build/msww/nova-only-trial-gate.json build/msww/rec/live.raw \
+  build/msww/rec/w171828.raw build/msww/rec/w172114.raw --jobs 3 --speed 2
+```
+
+The packer refuses an existing destination. These three packaged-engine replays
+passed with respectively 2/2, 4/4 and 4/4 labeled Nova detections, no labeled
+negative accepts, and matching simulated count/time/score. Every callback
+(including near misses) named `NOVA`. These are **training recordings**, not
+fresh proof of hello rejection. Independent GPT-6 Luna source review approved
+the target-only config correction; actual-device loading and held-out behavior
+remain unverified.
+
+Controlled trial delivery must preserve the existing model and daemon. Use a
+separate ID such as `nova-en-US-trial` (its parsed keyword is `nova`, language
+`en`), not `nova-msww-trial-en-US` (language would be `msww`). The signed artifact
+API is the existing installation path: begin/chunk/commit validates the set,
+including device `pryon_test` where installed; install requests the root watcher
+to copy the set and restart **hassmic**, not the Echo or OpenClaw Gateway. Verify
+the installed artifact digest before explicitly selecting the trial. Back up
+the current wake-word selection first and restore `nova-en-US` explicitly on
+rollback: a failed load falls back to Alexa, **not** the previous Nova model.
+Keep the prior model available until the old selection is confirmed active.
+
+ADB is currently offline despite an accepted signed debug-unlock request.
+The short-lived browser diagnostic identity was not retained after reading
+settings; that approval cannot authorize a different identity. Re-establish
+supported access before trial delivery, persist any newly approved diagnostic
+identity under ignored local build state, and do not invent an authentication
+bypass. Nothing in this section establishes that the candidate is installed or
+that the wake-word problem is fixed.

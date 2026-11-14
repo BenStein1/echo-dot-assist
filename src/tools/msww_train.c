@@ -184,17 +184,17 @@ static int scores(const struct clip *c,const struct row *r,float **out,unsigned 
     double sm=0;for(unsigned i=0;i<f.n;i++){const float *x=f.data+i*528+1;double p=sigmoid(row_score(x,r)-competing(x+D));sm=.6*sm+.4*p;s[i]=sm;}
     *out=s;*n=f.n;free(f.data);return 0;
 }
-static int calibrate(struct clip *c,int n,const struct row *r,double seconds,float *accept)
+static int calibrate(struct clip *c,int n,const struct row *r,double seconds,float *accept,float *margin)
 {
     /* ponytail: the 16-prompt UI affords one dev recording per class, so fit
-     * defaults/decay stay fixed and only the threshold is calibrated. More
-     * independent recordings would permit the host pipeline's nested search. */
+     * decay stays fixed while the fit and threshold use this small dev split.
+     * More independent recordings would permit nested cross-validation. */
     float pos=1,neg=0;for(int k=0;k<n;k++)if(c[k].split==1){float *s;unsigned nc;if(scores(c+k,r,&s,&nc))return -1;float peak=0;
         for(unsigned i=0;i<nc;i++){double t=(i+1)*.08;if(c[k].label&&t>=1.7&&t<=seconds+2.7){if(s[i]>peak)peak=s[i];}
             else if(s[i]>neg)neg=s[i];}
         if(c[k].label&&peak<pos)pos=peak;free(s);}
-    if(!(pos>neg+.02)||pos<=0||neg>=1){fprintf(stderr,"dev recordings do not separate: pos=%g negative=%g\n",pos,neg);return -1;}
-    *accept=(pos+neg)/2;return 0;
+    if(!(pos>neg+.02)||pos<=0||neg>=1)return 1;
+    *accept=(pos+neg)/2;*margin=pos-neg;return 0;
 }
 int main(int argc,char **argv)
 {
@@ -206,10 +206,22 @@ int main(int argc,char **argv)
     if(snprintf(pool,sizeof pool,"%s.pool",argv[3])>=(int)sizeof pool||snprintf(pos,sizeof pos,"%s.pos",argv[3])>=(int)sizeof pos||
        snprintf(row,sizeof row,"%s.row.json",argv[3])>=(int)sizeof row||snprintf(expected,sizeof expected,"%s.replay.json",argv[3])>=(int)sizeof expected)return 2;
     if(make_inputs(clips,n,seconds,pool,pos)){fprintf(stderr,"cannot build MSWW training inputs\n");return 2;}
-    pid_t pid=fork();if(pid<0)return 2;if(!pid){char *args[]={"msww_row",pool,pos,row,NULL};_exit(msww_fit_main(4,args));}
-    int status;if(waitpid(pid,&status,0)!=pid||!WIFEXITED(status)||WEXITSTATUS(status)){fprintf(stderr,"MSWW row fit failed\n");return 1;}
-    struct row r;if(load_row(row,&r))return 1;float accept;
-    if(calibrate(clips,n,&r,seconds,&accept))return 1;
+    /* Fit choices use training data only; select on the reserved development
+     * recordings. Never use final test recordings for fitting or selection. */
+    static char *l2[] = {"0.3", "3", "30"};
+    static char *fraction[] = {"0.05", "0.15", "0.35"};
+    struct row r;float accept=0,best=-1;unsigned best_li=0,best_pi=0;
+    for(unsigned li=0;li<3;li++)for(unsigned pi=0;pi<3;pi++){
+        pid_t pid=fork();if(pid<0)return 2;
+        if(!pid){char *args[]={"msww_row",pool,pos,row,"0.6",l2[li],fraction[pi],NULL};_exit(msww_fit_main(7,args));}
+        int status;if(waitpid(pid,&status,0)!=pid||!WIFEXITED(status)||WEXITSTATUS(status)){fprintf(stderr,"MSWW row fit failed\n");return 1;}
+        struct row candidate;if(load_row(row,&candidate))return 1;
+        float threshold,margin;int rc=calibrate(clips,n,&candidate,seconds,&threshold,&margin);
+        if(rc<0)return 1;
+        if(!rc&&margin>best){r=candidate;accept=threshold;best=margin;best_li=li;best_pi=pi;}
+    }
+    if(best<0){fprintf(stderr,"development recordings do not separate for any fit\n");return 1;}
+    printf("{\"phase\":\"calibrated\",\"l2\":%s,\"positive_fraction\":%s,\"development_margin\":%.9g}\n",l2[best_li],fraction[best_pi],best);fflush(stdout);
     if(save_model(argv[1],argv[3],&r)){fprintf(stderr,"cannot write MSWW decoder\n");return 1;}
     /* The decoder and thresholds are frozen before any test feature is opened. */
     FILE *out=fopen(expected,"wx");if(!out)return 1;

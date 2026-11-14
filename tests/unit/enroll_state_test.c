@@ -49,6 +49,16 @@ int main(int argc, char **argv)
         if (rc) fprintf(stderr, "%s\n", error);
         return rc ? 1 : 0;
     }
+    assert(!trainer_failed(1, 1, 1, 1)); /* completed MSWW rejection */
+    assert(trainer_failed(1, 1, 1, 0));  /* never ignore an error on PASS */
+    assert(trainer_failed(1, 2, 1, 1));
+    assert(trainer_failed(1, 1, 0, 1));
+    assert(trainer_failed(0, 1, 1, 1));
+    assert(!trainer_failed(0, 0, 1, 1));
+    struct tool_out completed = {0};
+    train_line("{\"phase\":\"complete\",\"train\":{\"tp\":6,\"fn\":0,\"fp\":0,\"tn\":6},\"test\":{\"tp\":1,\"fn\":1,\"fp\":1,\"tn\":1}}", &completed);
+    assert(S.have_result && S.test[0] == 1 && S.test[1] == 1 && S.test[2] == 1 && S.test[3] == 1);
+    memset(&S, 0, sizeof S);
     char prompts[8][100];
     for (int i = 0; i < 8; i++) {
         prompt_text("Nova", 0, i, prompts[i], sizeof prompts[i]);

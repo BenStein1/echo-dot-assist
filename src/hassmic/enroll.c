@@ -652,6 +652,11 @@ static int msww_parameters(const char *candidate, double *accept, double *notify
         *notify < 0 || *notify > *accept || *decay < 0 || *decay >= 1 ? -1 : 0;
 }
 
+/* The native MSWW tool returns 1 for a completed acoustic rejection. Other
+ * failures (including a nonzero exit with passing counts) remain tool errors. */
+static int trainer_failed(int msww, int rc, int have, int rejected)
+{ return !have || (rc && !(msww && rc == 1 && rejected)); }
+
 static int job(char *dir)
 {
     char ext[300], trn[300], bdir[300], p[500], pad[400], feat[400], manifest[400], model[400], cand[400], f1[300], f2[300];
@@ -718,7 +723,7 @@ static int job(char *dir)
     if (cancelled()) return -1;
     pthread_mutex_lock(&lk); int have = S.have_result, *tr = S.train, *te = S.test; int bad = !have || tr[1] || tr[2] || te[1] || te[2]; int t4[4], e4[4];
     memcpy(t4, tr, sizeof t4); memcpy(e4, te, sizeof e4); pthread_mutex_unlock(&lk);
-    if (rc || !have) {
+    if (trainer_failed(msww, rc, have, bad)) {
         fprintf(stderr, "enroll: pryon_train: exit %d: %s\n", rc, o.last);
         finish(ST_FAILED, "", "Training failed. The log says why.");
         return -1;

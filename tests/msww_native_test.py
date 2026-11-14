@@ -93,6 +93,12 @@ class NativeMSWW(unittest.TestCase):
         result = self.run_native(second)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(second.read_bytes(), frozen)
+        second_report = json.loads(Path(str(second)+'.replay.json').read_text())
+        self.assertEqual(second_report['accept'], report['accept'])
+        self.assertEqual(second_report['notify'], report['notify'])
+        # Neither fit selection nor calibration may consult held-out audio.
+        first_pick = next(x for x in result.stdout.splitlines() if '"phase":"calibrated"' in x)
+        self.assertIn('"development_margin"', first_pick)
         self.assertIn('"test":{"tp":1,"fn":1', result.stdout)
 
     def test_incompatible_features_fail_closed(self):

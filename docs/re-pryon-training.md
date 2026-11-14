@@ -246,3 +246,24 @@ times and clips beyond the enrollment memory budget are refused. Supply explicit
 labels/transcripts; the helper never guesses what was said. Keep development and
 final-evaluation source recordings separate, including context that crosses event
 boundaries. The lane-phase regression is `make unit-stream_windows`.
+
+## Completed MSWW rejection versus tool failure
+
+The native MSWW trainer deliberately exits 1 when a completed acoustic check
+rejects a candidate. Enrollment now reports that completed train/test verdict
+instead of masking it with a generic tool-failure message. Missing reports,
+other exit codes, and nonzero exits with passing counts still fail closed.
+This error-classification fix does not improve acoustic accuracy or relax the
+all-recordings-correct installation gate. `make unit-enroll_state` pins both
+rejection and genuine-tool-error cases.
+
+Native MSWW enrollment now evaluates a bounded nine-fit regularization/positive-
+weight grid against development recordings, rather than assuming the single
+research default fits every enrollment. All candidates fit only training audio;
+the maximum development separation selects the row and threshold. Final test
+features remain unopened until the selected decoder is written and fsynced.
+The single development example per class remains a small-data limitation, not
+a reliable false-wakes-per-hour estimate. This adds training time but does not
+raise peak fitting memory: fits run serially in isolated child processes.
+The optional encoder-compatible MSWW negative bundle is separate from the
+legacy bundle; a legacy `enroll-negatives` directory does not supplement MSWW.

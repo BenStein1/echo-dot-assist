@@ -86,6 +86,7 @@ class NativeMSWW(unittest.TestCase):
         self.assertTrue(all(len(r['events']) == (1 if i < 8 else 0) for i, r in enumerate(report['recordings'])))
         self.assertIn('"test":{"tp":2,"fn":0,"fp":0,"tn":2}', result.stdout)
         frozen = dest.read_bytes()
+        selected = next(x for x in result.stdout.splitlines() if '"phase":"calibrated"' in x)
         self.assertIn(field(5, tensor('unrelated_sums', [256], 6, bytes(256), True)), frozen)
         # Change held data only. Fit/calibration and written ONNX must not change.
         self.features('features-06.bin', 0)
@@ -97,8 +98,8 @@ class NativeMSWW(unittest.TestCase):
         self.assertEqual(second_report['accept'], report['accept'])
         self.assertEqual(second_report['notify'], report['notify'])
         # Neither fit selection nor calibration may consult held-out audio.
-        first_pick = next(x for x in result.stdout.splitlines() if '"phase":"calibrated"' in x)
-        self.assertIn('"development_margin"', first_pick)
+        selected_after = next(x for x in result.stdout.splitlines() if '"phase":"calibrated"' in x)
+        self.assertEqual(selected_after, selected)
         self.assertIn('"test":{"tp":1,"fn":1', result.stdout)
 
     def test_incompatible_features_fail_closed(self):

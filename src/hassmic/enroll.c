@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -102,16 +103,36 @@ static int tool_path(const char *env, const char *name, char *out, size_t cap)
 static int base_dir(const char *manifest, char *out, size_t cap)
 {
     const char *e = getenv("HASSMIC_ENROLL_BASE"); char *slash;
+    /* A downloaded stock MSWW set supplies the richer competing-class head.
+     * Never take a previously enrolled/custom set as the training base. */
+    if (!e) {
+        char p[512];
+        snprintf(out, cap, "%s/computer-en-US", models_dir());
+        snprintf(p, sizeof p, "%s/multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx", out);
+        if (!access(p, R_OK)) {
+            snprintf(p, sizeof p, "%s/%s", out, ENROLL_MARK);
+            if (access(p, F_OK) && errno == ENOENT) return 0;
+        }
+    }
     snprintf(out, cap, "%s", e ? e : manifest);
     if (!e && (slash = strrchr(out, '/'))) *slash = 0;
     return 0;
 }
 
+static int msww_base(const char *base)
+{
+    char p[512]; snprintf(p, sizeof p, "%s/multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx", base);
+    return !access(p, R_OK);
+}
+
 int enroll_available(const char *base_manifest)
 {
     char t[300], b[300], m[340];
-    if (!base_manifest || tool_path("HASSMIC_PRYON_EXTRACT", "pryon_extract", t, sizeof t) || tool_path("HASSMIC_PRYON_TRAIN", "pryon_train", t, sizeof t)) return 0;
+    if (!base_manifest || tool_path("HASSMIC_PRYON_EXTRACT", "pryon_extract", t, sizeof t)) return 0;
     base_dir(base_manifest, b, sizeof b);
+    if (msww_base(b)) {
+        if (tool_path("HASSMIC_MSWW_TRAIN", "msww_train", t, sizeof t) || tool_path("HASSMIC_PRYON_TEST", "pryon_test", t, sizeof t)) return 0;
+    } else if (tool_path("HASSMIC_PRYON_TRAIN", "pryon_train", t, sizeof t)) return 0;
     snprintf(m, sizeof m, "%s/pryon.manifest", b);
     return !access(m, R_OK);
 }
@@ -122,7 +143,7 @@ int enroll_available(const char *base_manifest)
 static atomic_int tool_pgid;
 static int run_tool(char *const argv[], long limit_mb, void (*line)(const char *, void *), void *ctx)
 {
-    int pfd[2], code = -1; pid_t pid; char buf[1024], text[1024]; size_t have = 0;
+    int pfd[2], code = -1; pid_t pid; char buf[1024], text[1 << 17]; size_t have = 0;
     if (pipe(pfd)) return -1;
     if ((pid = fork()) < 0) { close(pfd[0]); close(pfd[1]); return -1; }
     if (pid == 0) {                         /* only async-signal-safe calls: we are a copy of a threaded process */
@@ -424,9 +445,10 @@ static int install_result(void)
 
 /* Reusable negatives are private native features, never model assets committed to source. The corpus is bounded:
  * at most 16 training clips of 180 cycles add less than 60 MB to the trainer's resident feature arrays. */
-static int corpus_negatives(FILE *manifest, const char *dir, const char *model, const char *phrase, int counts[2])
+static int corpus_negatives_mode(FILE *manifest, const char *dir, const char *model, const char *phrase, int counts[2], int msww)
 {
-    const char *path = env_or("HASSMIC_ENROLL_NEGATIVES", "/data/local/hassmic/enroll-negatives/manifest.json");
+    const char *path = msww ? env_or("HASSMIC_ENROLL_MSWW_NEGATIVES", "/data/local/hassmic/enroll-msww-negatives/manifest.json") :
+        env_or("HASSMIC_ENROLL_NEGATIVES", "/data/local/hassmic/enroll-negatives/manifest.json");
     FILE *f = fopen(path, "rb"); if (!f) return errno == ENOENT ? 0 : -1;
     char text[32769], root[1024], expected[65], actual[65];
     size_t n = fread(text, 1, sizeof text - 1, f); int bad = ferror(f) || !feof(f); fclose(f);
@@ -444,7 +466,7 @@ static int corpus_negatives(FILE *manifest, const char *dir, const char *model, 
     bad = ferror(f); fclose(f); sha256_final(&hash, dg);
     for (int k = 0; k < 32; k++) snprintf(actual + 2*k, 3, "%02x", dg[k]);
     if (bad || strcmp(actual, expected)) { json_free(&j); return -1; }
-    int index = 0, seen = 0; char names[32][128], texts[32][1024], speakers[32][128]; int splits[32]; uint8_t digests[32][32];
+    int index = 0, seen = 0; char names[32][128], texts[32][1024], speakers[32][128]; int splits[32]; uint8_t digests[32][32], raw_digests[32][32];
     JSON_EACH(&j, rows, row) {
         char name[128], split[16], transcript[1024], speaker[128] = "", source[1200], dest[1200];
         if (!json_str(&j, json_get(&j, row, "path"), name, sizeof name) || !*name || strstr(name, "..") ||
@@ -474,9 +496,11 @@ static int corpus_negatives(FILE *manifest, const char *dir, const char *model, 
         f = fopen(source, "rb"); if (!f) { bad = 1; break; }
         /* Validate the complete header and bounded length before copying. */
         uint32_t header[4]; struct stat st;
-        if (fstat(fileno(f), &st) || st.st_size < 16 + 31*10000 || st.st_size > 16 + 180*10000 ||
-            (st.st_size - 16) % 10000 || fread(header, 1, 16, f) != 16 || header[0] != 0x46595250 ||
-            header[1] != 1 || header[2] != 25 || header[3] != 100) { fclose(f); bad = 1; break; }
+        int record_size = msww ? 528 * 4 : 10000;
+        if (fstat(fileno(f), &st) || !S_ISREG(st.st_mode) || st.st_size < 16 + 31*record_size || st.st_size > 16 + 180*record_size ||
+            (st.st_size - 16) % record_size || fread(header, 1, 16, f) != 16 || header[0] != 0x46595250 ||
+            header[1] != (msww ? 2u : 1u) || header[2] != (msww ? 512u : 25u) || header[3] != (msww ? 15u : 100u)) { fclose(f); bad = 1; break; }
+        long cycles = ((long)st.st_size - 16) / record_size;
         FILE *out = fopen(dest, "wb"); if (!out) { fclose(f); bad = 1; break; }
         sha256_init(&hash); sha256_update(&hash, header, 16);
         bad = fwrite(header, 1, 16, out) != 16;
@@ -492,6 +516,30 @@ static int corpus_negatives(FILE *manifest, const char *dir, const char *model, 
         sha256_final(&hash, digests[index]);
         for (int k = 0; k < index; k++) if (!memcmp(digests[k], digests[index], 32)) bad = 1;
         if (bad) break;
+        if (msww) {
+            char raw[128]; int token = json_get(&j, row, "raw");
+            if (json_type(&j, token) != J_STR || j.t[token].end - j.t[token].start >= (int)sizeof raw ||
+                !json_str(&j, token, raw, sizeof raw) || !*raw || strstr(raw, "..")) { bad = 1; break; }
+            for (const char *p = raw; *p; p++) if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_' && *p != '.') bad = 1;
+            snprintf(source, sizeof source, "%s/%s", root, raw);
+            snprintf(dest, sizeof dest, "%s/negative-%02d.raw", dir, index);
+            int in = bad ? -1 : open(source, O_RDONLY | O_NOFOLLOW);
+            if (in < 0) { bad = 1; break; }
+            if (fstat(in, &st) || !S_ISREG(st.st_mode) || st.st_size % 2 ||
+                labs((long)st.st_size / 2 - cycles * 1280) > 2560) { close(in); bad = 1; break; }
+            FILE *audio = fdopen(in, "rb"), *out = fopen(dest, "wx");
+            if (!audio || !out) { if (audio) fclose(audio); else close(in); if (out) fclose(out); bad = 1; break; }
+            sha256_init(&hash);
+            while ((n = fread(buf, 1, sizeof buf, audio))) {
+                sha256_update(&hash, buf, n);
+                if (fwrite(buf, 1, n, out) != n) { bad = 1; break; }
+            }
+            if (ferror(audio) || ferror(out)) bad = 1;
+            fclose(audio); if (fclose(out)) bad = 1;
+            sha256_final(&hash, raw_digests[index]);
+            for (int k = 0; k < index; k++) if (!memcmp(raw_digests[k], raw_digests[index], 32)) bad = 1;
+            if (bad) break;
+        }
         fprintf(manifest, ",{\"path\":\"negative-%02d.bin\",\"label\":0,\"split\":\"%s\"}", index++, split);
     }
     json_free(&j);
@@ -499,15 +547,122 @@ static int corpus_negatives(FILE *manifest, const char *dir, const char *model, 
     return index;
 }
 
+static int corpus_negatives(FILE *manifest, const char *dir, const char *model, const char *phrase, int counts[2])
+{ return corpus_negatives_mode(manifest, dir, model, phrase, counts, 0); }
+
+struct replay_check {
+    const char *key;
+    unsigned long long samples, pushed;
+    int want, seen, pending, bad, have_pushed;
+    unsigned long long at[32]; double score[32];
+};
+
+static void replay_line(const char *l, void *ctx)
+{
+    struct replay_check *r = ctx;
+    /* Native library diagnostics are machine output, not user language. */
+    for (const char *p = l; *p; p++) {
+        unsigned long n;
+        if ((!strncmp(p, "dropped ", 8) && sscanf(p + 8, "%lu", &n) == 1 && n) ||
+            (!strncmp(p, "skipped ", 8) && sscanf(p + 8, "%lu", &n) == 1 && n)) r->bad = 1;
+    }
+    unsigned long long pushed;
+    if (sscanf(l, "pushed %llu samples", &pushed) == 1) { r->pushed = pushed; r->have_pushed = 1; }
+    if (!strncmp(l, "RESULT ", 7)) {
+        if (r->pending) r->bad = 1;
+        const char *p = strstr(l, "keyword="); char key[64]; int type;
+        if (!p || sscanf(p, "keyword=%63s type=%d", key, &type) != 2) { r->bad = 1; return; }
+        r->pending = type == 2;
+        if (type == 2 && strcmp(key, r->key)) r->bad = 1;
+    } else if (!strncmp(l, "META ", 5)) {
+        const char *p = strchr(l, '{'); struct json j = {0};
+        if (!p || json_parse(&j, p, strlen(p))) { json_free(&j); r->bad = 1; return; }
+        static const char *section[] = {"deviceMetrics", "audioMetadataDuringDetection"};
+        static const char *keys[2][2] = {{"skipped_audio_backlog_since_last_ww_msec", "sum_client_sample_index_gaps_since_last_ww"}, {"dropFramesCount", "largestFrameDropedAtOnce"}};
+        for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++) {
+            int s = json_get(&j, 0, section[a]), v = json_get(&j, s, keys[a][b]);
+            if (v >= 0 && json_num(&j, v, NAN) != 0) r->bad = 1;
+        }
+        if (r->pending) {
+            long long sample = json_int(&j, json_get(&j, 0, "kwSampleDetectionIndex"), -1);
+            double score = json_num(&j, json_get(&j, 0, "kwClassificationScore"), NAN);
+            if (r->seen >= r->want || sample < 0 || (unsigned long long)sample != r->at[r->seen] ||
+                !isfinite(score) || fabs(score - r->score[r->seen]) >= 1e-5) r->bad = 1;
+            r->seen++; r->pending = 0;
+        }
+        json_free(&j);
+    }
+}
+
+/* Replay the exact padded recordings against the packaged engine, not merely
+ * a simulator or the unmodified stock set. No stage is committed on failure. */
+static int msww_replay(const char *dir, const char *candidate, const char *setdir, const char *key,
+                       double *accept, double *notify, double *decay)
+{
+    char p[512], tool[300], manifest[512], text[65536];
+    snprintf(p, sizeof p, "%s.replay.json", candidate); FILE *f = fopen(p, "r"); if (!f) return -1;
+    size_t n = fread(text, 1, sizeof text - 1, f); int bad = ferror(f) || !feof(f); fclose(f); text[n] = 0;
+    struct json j = {0}; if (bad || json_parse(&j, text, n)) { json_free(&j); return -1; }
+    *accept = json_num(&j, json_get(&j, 0, "accept"), NAN);
+    *notify = json_num(&j, json_get(&j, 0, "notify"), NAN);
+    *decay = json_num(&j, json_get(&j, 0, "decay"), NAN);
+    int rows = json_get(&j, 0, "recordings");
+    if (!isfinite(*accept) || !isfinite(*notify) || !isfinite(*decay) || *accept <= 0 || *accept > 1 ||
+        *notify < 0 || *notify > *accept || *decay < 0 || *decay >= 1 || json_type(&j, rows) != J_ARR ||
+        tool_path("HASSMIC_PRYON_TEST", "pryon_test", tool, sizeof tool)) bad = 1;
+    snprintf(manifest, sizeof manifest, "%s/pryon.manifest", setdir);
+    int total = json_len(&j, rows);
+    if (total < CLIPS || total > CLIPS + 32) bad = 1;
+    int i = 0;
+    if (!bad) JSON_EACH(&j, rows, row) {
+        char path[80], wanted[80]; snprintf(wanted, sizeof wanted, i < CLIPS ? "features-%02d.bin" : "negative-%02d.bin", i < CLIPS ? i : i - CLIPS);
+        if (!json_str(&j, json_get(&j, row, "path"), path, sizeof path) || strcmp(path, wanted)) { bad = 1; break; }
+        struct replay_check check = {.key = key}; int events = json_get(&j, row, "events");
+        check.want = json_len(&j, events);
+        if (json_type(&j, events) != J_ARR || check.want < 0 || check.want > 32) { bad = 1; break; }
+        int e = 0;
+        JSON_EACH(&j, events, ev) {
+            int t = json_first(&j, ev), s = json_next(&j, ev, t);
+            long long at = json_int(&j, t, -1); double sc = json_num(&j, s, NAN);
+            if (json_len(&j, ev) != 2 || at < 0 || !isfinite(sc)) check.bad = 1;
+            check.at[e] = (unsigned long long)at; check.score[e++] = sc;
+        }
+        if (i < CLIPS) snprintf(p, sizeof p, "%s/replay-%02d.raw", dir, i);
+        else snprintf(p, sizeof p, "%s/negative-%02d.raw", dir, i - CLIPS);
+        struct stat st; if (stat(p, &st) || st.st_size <= 0 || st.st_size % 2) { bad = 1; break; }
+        check.samples = (unsigned long long)st.st_size / 2;
+        char *argv[] = {tool, "-m", manifest, p, NULL};
+        int rc = run_tool(argv, 0, replay_line, &check);
+        if (cancelled() || (rc != 0 && rc != 3) || check.bad || check.pending || check.seen != check.want ||
+            !check.have_pushed || check.pushed != check.samples) { bad = 1; break; }
+        i++;
+    }
+    json_free(&j); return bad || i != total ? -1 : 0;
+}
+
+static int msww_parameters(const char *candidate, double *accept, double *notify, double *decay)
+{
+    char p[512], text[65536]; snprintf(p, sizeof p, "%s.replay.json", candidate);
+    FILE *f = fopen(p, "r"); if (!f) return -1;
+    size_t n = fread(text, 1, sizeof text - 1, f); int bad = ferror(f) || !feof(f); fclose(f); text[n] = 0;
+    struct json j = {0}; if (bad || json_parse(&j, text, n)) { json_free(&j); return -1; }
+    *accept = json_num(&j, json_get(&j, 0, "accept"), NAN); *notify = json_num(&j, json_get(&j, 0, "notify"), NAN);
+    *decay = json_num(&j, json_get(&j, 0, "decay"), NAN); json_free(&j);
+    return !isfinite(*accept) || !isfinite(*notify) || !isfinite(*decay) || *accept <= 0 || *accept > 1 ||
+        *notify < 0 || *notify > *accept || *decay < 0 || *decay >= 1 ? -1 : 0;
+}
+
 static int job(char *dir)
 {
     char ext[300], trn[300], bdir[300], p[500], pad[400], feat[400], manifest[400], model[400], cand[400], f1[300], f2[300];
     char argv_store[6][420]; char *argv[6]; struct tool_out o = { "", 0, 0 };
-    if (tool_path("HASSMIC_PRYON_EXTRACT", "pryon_extract", ext, sizeof ext) || tool_path("HASSMIC_PRYON_TRAIN", "pryon_train", trn, sizeof trn)) {
+    base_dir(S.base, bdir, sizeof bdir);
+    int msww = msww_base(bdir);
+    if (tool_path("HASSMIC_PRYON_EXTRACT", "pryon_extract", ext, sizeof ext) ||
+        tool_path(msww ? "HASSMIC_MSWW_TRAIN" : "HASSMIC_PRYON_TRAIN", msww ? "msww_train" : "pryon_train", trn, sizeof trn)) {
         finish(ST_FAILED, "", "This Echo does not have the training tools."); return -1;
     }
-    base_dir(S.base, bdir, sizeof bdir);
-    snprintf(model, sizeof model, "%s/%s", bdir, ENROLL_MODEL);
+    snprintf(model, sizeof model, "%s/%s", bdir, msww ? "multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx" : ENROLL_MODEL);
     snprintf(manifest, sizeof manifest, "%s/features.json", dir);
     snprintf(pad, sizeof pad, "%s/padded.raw", dir);
     pthread_mutex_lock(&lk); S.job_at = time(NULL); S.progress = 0; S.state = ST_EXTRACTING; pthread_mutex_unlock(&lk);
@@ -517,10 +672,12 @@ static int job(char *dir)
     fputs("[", m);
     for (int i = 0; i < CLIPS; i++) {
         int label = i < PER_CLASS, k = label ? i : i - PER_CLASS;
-        fprintf(m, "%s{\"path\":\"features-%02d.bin\",\"label\":%d,\"split\":\"%s\"}", i ? "," : "", i, label, k >= PER_CLASS - HELD_OUT ? "test" : "train");
+        const char *split = k >= PER_CLASS - HELD_OUT ? "test" : msww && k == PER_CLASS - HELD_OUT - 1 ? "dev" : "train";
+        fprintf(m, "%s{\"path\":\"features-%02d.bin\",\"label\":%d,\"split\":\"%s\"}", i ? "," : "", i, label, split);
     }
     int negatives[2] = {0};
-    int extra = corpus_negatives(m, dir, model, S.phrase, negatives);
+    /* Old-head features are not interchangeable with MSWW activations. */
+    int extra = msww ? corpus_negatives_mode(m, dir, model, S.phrase, negatives, 1) : corpus_negatives(m, dir, model, S.phrase, negatives);
     fputs("]\n", m); int manifest_bad = ferror(m); if (fclose(m)) manifest_bad = 1;
     if (extra < 0 || manifest_bad) { finish(ST_FAILED, "", "The shared negative corpus is invalid, incompatible, or has no usable train/test split."); return -1; }
 
@@ -531,12 +688,15 @@ static int job(char *dir)
         pthread_mutex_unlock(&lk);
         snprintf(p, sizeof p, "%s/clip-%02d.raw", dir, i); snprintf(feat, sizeof feat, "%s/features-%02d.bin", dir, i);
         if (pad_clip(p, pad)) { finish(ST_FAILED, "", "Cannot prepare a recording."); return -1; }
-        snprintf(argv_store[0], sizeof argv_store[0], "%s", ext); snprintf(argv_store[1], sizeof argv_store[1], "%s/pryon.manifest", bdir);
-        snprintf(argv_store[2], sizeof argv_store[2], "%s", pad); snprintf(argv_store[3], sizeof argv_store[3], "%s", feat);
-        for (int k = 0; k < 4; k++) argv[k] = argv_store[k];
-        argv[4] = NULL;
+        snprintf(argv_store[0], sizeof argv_store[0], "%s", ext);
+        int ai = 1; if (msww) snprintf(argv_store[ai++], sizeof argv_store[0], "-w");
+        snprintf(argv_store[ai++], sizeof argv_store[0], "%s/pryon.manifest", bdir);
+        snprintf(argv_store[ai++], sizeof argv_store[0], "%s", pad); snprintf(argv_store[ai++], sizeof argv_store[0], "%s", feat);
+        for (int k = 0; k < ai; k++) argv[k] = argv_store[k];
+        argv[ai] = NULL;
         int rc = run_tool(argv, 0, extract_line, &o);
-        unlink(pad); unlink(p);                                          /* the recording is not needed again */
+        if (msww && !rc) { char replay[400]; snprintf(replay, sizeof replay, "%s/replay-%02d.raw", dir, i); if (rename(pad, replay)) rc = -1; }
+        unlink(pad); unlink(p);                                          /* MSWW retains its padded stream until real-engine replay */
         if (cancelled()) return -1;
         if (rc) {
             fprintf(stderr, "enroll: pryon_extract on recording %d: exit %d: %s\n", i, rc, o.last);
@@ -550,7 +710,7 @@ static int job(char *dir)
     snprintf(cand, sizeof cand, "%s/candidate.onnx", dir);
     snprintf(argv_store[0], sizeof argv_store[0], "%s", trn); snprintf(argv_store[1], sizeof argv_store[1], "%s", model);
     snprintf(argv_store[2], sizeof argv_store[2], "%s", manifest); snprintf(argv_store[3], sizeof argv_store[3], "%s", cand);
-    snprintf(argv_store[4], sizeof argv_store[4], "%d", STEPS);
+    snprintf(argv_store[4], sizeof argv_store[4], "%d", msww ? S.seconds : STEPS);
     for (int k = 0; k < 5; k++) argv[k] = argv_store[k];
     argv[5] = NULL;
     memset(&o, 0, sizeof o);
@@ -584,7 +744,24 @@ static int job(char *dir)
     snprintf(note, sizeof note, "phrase=%s\nkeyword=%s\nheld-out=%d/%d,%d/%d\nshared-negatives=%d/%d\n", S.phrase, S.key, e4[0], e4[0] + e4[1], e4[3], e4[2] + e4[3], negatives[0], negatives[1]);
     snprintf(f2, sizeof f2, "%s", f1);
     { char *slash = strrchr(f2, '/'); if (slash) { *slash = 0; mkdir(f2, 0755); } }
-    if (enroll_make_set(bdir, cand, f1, S.key, note, err, sizeof err)) { finish(ST_FAILED, "", err); return -1; }
+    if (msww) {
+        double accept, notify, decay;
+        if (msww_parameters(cand, &accept, &notify, &decay) ||
+            enroll_make_msww_set(bdir, cand, f1, S.key, note, accept, notify, decay, err, sizeof err)) {
+            finish(ST_FAILED, "", *err ? err : "MSWW calibration is invalid."); return -1;
+        }
+        /* Replay can take minutes with a shared corpus; it is still local
+         * validation, so cancellation remains available until commit. */
+        set(ST_TRAINING, "Checking your word with the Echo's actual wake word engine");
+        int replay_bad = msww_replay(dir, cand, f1, S.key, &accept, &notify, &decay);
+        if (cancelled()) { art_unstage(artid); return -1; }
+        if (replay_bad) {
+            art_unstage(artid); finish(ST_FAILED, "", "The packaged wake word failed its real-engine replay check; nothing was installed."); return -1;
+        }
+        pthread_mutex_lock(&lk);
+        if (cancelled()) { pthread_mutex_unlock(&lk); art_unstage(artid); return -1; }
+        S.state = ST_PACKAGING; pthread_mutex_unlock(&lk);
+    } else if (enroll_make_set(bdir, cand, f1, S.key, note, err, sizeof err)) { finish(ST_FAILED, "", err); return -1; }
     if (art_staged(artid, err, sizeof err) || art_commit(artid, err, sizeof err)) { art_unstage(artid); finish(ST_FAILED, "", err); return -1; }
     /* From here nothing cancels it (enroll_cancel only acts while recording, extracting and training): the install is root's. */
     set(ST_INSTALLING, "Installing; the Echo restarts its wake word engine in a moment");

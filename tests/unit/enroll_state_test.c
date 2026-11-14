@@ -26,6 +26,21 @@ static void *feed_thread(void *unused)
 }
 int main(int argc, char **argv)
 {
+    /* Real-engine replay accepts require keyword, exact samples/scores, and
+     * zero dropped audio. A matching simulator count alone is not enough. */
+    struct replay_check replay = {.key = "JARVIS", .want = 1, .at = {38400}, .score = {.75}};
+    replay_line("RESULT decoder=x keyword=JARVIS type=2 begin=0 end=0", &replay);
+    replay_line("META header 9 bytes, {\"kwSampleDetectionIndex\":38400,\"kwClassificationScore\":0.75,\"deviceMetrics\":{\"skipped_audio_backlog_since_last_ww_msec\":0}}", &replay);
+    replay_line("pushed 112000 samples (7.0s), 1 callbacks", &replay);
+    assert(!replay.bad && replay.seen == 1 && !replay.pending && replay.have_pushed && replay.pushed == 112000);
+    struct replay_check wrong = {.key = "JARVIS"};
+    replay_line("RESULT decoder=x keyword=ALEXA type=2 begin=0 end=0", &wrong); assert(wrong.bad);
+    struct replay_check loss = {0}; replay_line("pryon: dropped 3 audio frames", &loss); assert(loss.bad);
+    loss.bad = 0; replay_line("pryon: skipped 0 frames", &loss); assert(!loss.bad);
+    replay_line("META header 9 bytes, {\"audioMetadataDuringDetection\":{\"dropFramesCount\":1}}", &loss); assert(loss.bad);
+    struct replay_check drift = {.key = "JARVIS", .want = 1, .at = {38400}, .score = {.75}};
+    replay_line("RESULT decoder=x keyword=JARVIS type=2 begin=0 end=0", &drift);
+    replay_line("META header 9 bytes, {\"kwSampleDetectionIndex\":39680,\"kwClassificationScore\":0.75}", &drift); assert(drift.bad);
     /* Also exercise the same startup/recovery functions against an isolated on-device installer workspace. */
     if (argc == 2 && (!strcmp(argv[1], "--reconcile") || !strcmp(argv[1], "--discard"))) {
         char json[4096], error[300] = ""; enroll_init();

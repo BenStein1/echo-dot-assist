@@ -91,6 +91,39 @@ int main(void)
     put(base, "words.shrunk.txt", "<eps> 0\nECHO 1\nSTOP 2\n");
     char dest2[300]; snprintf(dest2, sizeof dest2, "%s/out2", root);
     assert(enroll_make_set(base, cand, dest2, "NOVA", "n", err, sizeof err) < 0 && access(dest2, F_OK));
+
+    /* MSWW is target-only configuration, not a network with its competitors
+     * zeroed. Test a non-Nova name and every playback threshold override. */
+    char ms[300], sub[400], out[300]; snprintf(ms, sizeof ms, "%s/msww", root); mkdir(ms, 0755);
+    snprintf(sub, sizeof sub, "%s/BDPGeneratedFiles", ms); mkdir(sub, 0755);
+    put(sub, "kw.cfg.json", "{\"keyword-orchestra\":{\"keyword-spotters\":[{\"name\":\"ALEXA\"},{\"name\":\"COMPUTER\",\"classifier\":{\"decay-rate\":0.2},\"spotter\":{\"word-component-array\":[{\"scorer-index\":3}],\"lock-period\":9,\"classification-thresholds\":{\"accept-threshold\":0.1,\"notify-threshold\":0.01,\"overrides\":[{\"accept-threshold\":0.02}]} }},{\"name\":\"STOP\"}]}}");
+    put(sub, "op.cfg.json", "{\"sleep\":{\"rules\":[{\"name\":\"ALEXA\"},{\"name\":\"COMPUTER\"},{\"name\":\"STOP\"}]},\"active\":{\"rules\":[{\"name\":\"STOP\"}]}}");
+    put(sub, "words.shrunk.txt", "<eps> 0\nCOMPUTER 3\nALEXA 1\n");
+    snprintf(sub, sizeof sub, "%s/encoder", ms); mkdir(sub, 0755); put(sub, "words.shrunk.txt", "COMPUTER 3\n");
+    snprintf(sub, sizeof sub, "%s/multi-wakeword-wakeworddecoder", ms); mkdir(sub, 0755);
+    put(sub, "odyssey_msww.streaming.fixed.int8.onnx", "STOCK-15-CLASSES");
+    put(ms, "pryon.manifest", "{}");
+    snprintf(out, sizeof out, "%s/msout", root);
+    assert(!enroll_make_msww_set(ms, cand, out, "JARVIS", "phrase=Jarvis\n", .75, .1875, .6, err, sizeof err));
+    char *kw = slurp(out, "BDPGeneratedFiles/kw.cfg.json"); struct json j = {0}; assert(!json_parse(&j, kw, strlen(kw)));
+    int arr = json_get(&j, json_get(&j, 0, "keyword-orchestra"), "keyword-spotters"); assert(json_len(&j, arr) == 1);
+    int sp = json_first(&j, arr); assert(json_streq(&j, json_get(&j, sp, "name"), "JARVIS"));
+    int classifier = json_get(&j, sp, "classifier"), spotter = json_get(&j, sp, "spotter");
+    assert(json_num(&j, json_get(&j, classifier, "decay-rate"), 0) == .6);
+    int component = json_first(&j, json_get(&j, spotter, "word-component-array"));
+    assert(json_int(&j, json_get(&j, component, "scorer-index"), 0) == 12);
+    assert(json_int(&j, json_get(&j, spotter, "lock-period"), 0) == 100);
+    int th = json_get(&j, spotter, "classification-thresholds");
+    assert(json_num(&j, json_get(&j, th, "accept-threshold"), 0) == .75);
+    assert(json_num(&j, json_get(&j, th, "notify-threshold"), 0) == .1875);
+    assert(json_num(&j, json_get(&j, json_first(&j, json_get(&j, th, "overrides")), "accept-threshold"), 0) == .75); json_free(&j);
+    assert(!strstr(slurp(out, "BDPGeneratedFiles/op.cfg.json"), "STOP"));
+    assert(!strstr(slurp(out, "BDPGeneratedFiles/op.cfg.json"), "ALEXA"));
+    assert(!strcmp(slurp(out, "encoder/words.shrunk.txt"), "JARVIS 3\n"));
+    assert(!strcmp(slurp(out, "multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx"), "NEW-HEAD"));
+    assert(!strcmp(slurp(ms, "multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx"), "STOCK-15-CLASSES"));
+    snprintf(out, sizeof out, "%s/bad-calibration", root);
+    assert(enroll_make_msww_set(ms, cand, out, "JARVIS", "n", .2, .4, .6, err, sizeof err) && access(out, F_OK));
     char cmd[400]; snprintf(cmd, sizeof cmd, "rm -rf %s", root); assert(!system(cmd));
     printf("enroll_pkg: ok\n");
     return 0;

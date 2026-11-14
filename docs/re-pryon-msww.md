@@ -48,11 +48,52 @@ is installed or selected automatically. A successful small replay is not broad
 accuracy certification. Keep Amazon-derived models and personal audio in ignored
 `build/`; use the existing signed artifact path and reversible trial for delivery.
 
-**Scope:** this integrates the host MSWW generation pipeline, **not** the settings
-page's `enroll.c` pipeline. That still uses `pryon_train` and the old Alexa head.
-Replacing it requires the MSWW data/pool conversion, ONNX row writer, calibration
-and packaged replay to work on-device; do not silently claim UI-generated words
-use this method. Existing stock words and microWakeWord are unchanged.
+### Native settings-page generation
+
+`enroll.c` now prefers the stock downloaded `models/computer-en-US` MSWW set
+(not a previously enrolled set) when available. The shipped `msww_train` needs
+only libc/libm: `pryon_extract -w` produces 512-dimensional inputs and 15 logits;
+the native pool converter feeds the existing compressed `msww_row` optimizer;
+the ONNX writer edits slot 12 only. Other network classes remain competitors.
+Native packaging exposes only the new keyword and applies its thresholds in
+every playback/alarm override. Original models and existing words are untouched.
+
+Of each eight local recordings, five fit the row, one calibrates its threshold,
+and two are reserved. The native backend uses the existing default row-fit
+hyperparameters and decay 0.6; its threshold is computed from that word's dev
+positive/negative separation, **not** copied from Nova. This is not the host's
+more expensive nested hyperparameter search. Held features are opened only
+after writing the frozen decoder. Every word must produce exactly one accept
+in its labeled interval and every negative zero accepts, including training/dev.
+
+The padded raw recordings survive extraction until `pryon_test` replays them
+against the **packaged** candidate. All accepts must name the target, match the
+simulation's sample index/score, and report no lost audio. Every input sample
+must have been pushed. Failure blocks artifact commit/installation; normal
+session cleanup deletes raw audio, features and candidate either way. No audio
+leaves the Echo. The existing signed/staged root installer remains in charge.
+
+A separate optional shared corpus lives at `enroll-msww-negatives/manifest.json`
+(`HASSMIC_ENROLL_MSWW_NEGATIVES` override), never the incompatible old-head
+corpus. Provision it with `tools/pryon-native/prepare_negatives.py --msww` using
+v2 features, accurate transcripts, disjoint train/test speakers/content and the
+exact 16 kHz s16le streams in each row's `raw` field. The source ONNX SHA binds
+the bundle; bounded features and raw streams are copied and replayed locally.
+Without this bundle only the prompted negatives are available: passing a small
+personal enrollment is not broad false-wake certification.
+
+Devices without a downloaded MSWW source retain the legacy trainer. An explicit
+`HASSMIC_ENROLL_BASE` also preserves backend selection for diagnostics/tests.
+Stock words, microWakeWord and the existing Nova trial are unchanged. This source
+change does not deploy binaries or regenerate any installed words.
+
+Checks: `make unit-msww_native unit-enroll_pkg unit-enroll_state unit-prepare_negatives`,
+and `MSWW_NATIVE=build/donut/msww_train MSWW_QEMU=1 python3 tests/msww_native_test.py`
+after building the ARM backend. Synthetic fixtures verify integration, frozen
+held splits and failures; they do **not** measure real recognition. A native-written
+row packaged in the real stock set was also loaded by the genuine engine under
+QEMU with all 112000 silence samples pushed. Fresh native UI enrollment on the
+Echo and new-word quality remain unverified.
 
 Checks: `python3 tools/msww/test_enrollment.py`, `test_pack.py`, `test_gate.py`.
 

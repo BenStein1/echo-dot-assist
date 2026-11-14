@@ -35,4 +35,22 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             raise AssertionError(f"cross-split {field} was accepted")
         assert not (root / ("bad-" + field)).exists()
-print("prepare_negatives: bounded bundle and train/test isolation passed")
+    # Native MSWW enrollment keeps the exact raw streams for real-engine replay.
+    for i, row in enumerate(rows):
+        (root / row['path']).write_bytes(struct.pack('<4I', 0x46595250, 2, 512, 15) +
+                                        b'\0' * (31 * 528 * 4 - 4) + struct.pack('<f', i+1))
+        row['raw'] = f'negative-{i}.raw'
+        (root / row['raw']).write_bytes(struct.pack('<h', i+1) * (31 * 1280))
+    manifest.write_text(json.dumps(rows))
+    module.prepare(model, manifest, root / 'msww', msww=True)
+    bundle = json.loads((root / 'msww/manifest.json').read_text())
+    for i, row in enumerate(bundle['recordings']):
+        assert (root / 'msww' / row['raw']).read_bytes() == (root / rows[i]['raw']).read_bytes()
+    (root / rows[1]['raw']).write_bytes((root / rows[0]['raw']).read_bytes())
+    try:
+        module.prepare(model, manifest, root / 'bad-msww', msww=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('duplicate MSWW raw audio accepted')
+print("prepare_negatives: bounded bundles, MSWW raw replay inputs and train/test isolation passed")

@@ -1,10 +1,12 @@
 /* A wake word of your own, trained on the Echo (the settings page, Wake word: "Train your own"): the Echo asks for the
  * word eight times and for eight other things, records them through its own microphones (the audio the wake word
  * hears: after the front end), has the stock engine turn each recording into the activations that feed its wake word
- * head (pryon_extract), fits a new head to them (pryon_train, about four minutes on a Dot 3, at the lowest priority so
- * the wake word keeps working), checks it on the recordings it never saw, and, if every one is right, installs the set
+ * head (pryon_extract), fits a new head at the lowest priority so the wake word keeps working, checks it on the
+ * recordings it never saw, and, if every one is right, installs the set
  * next to the others (artifacts.c) and, if asked, makes it the wake word.  Nothing leaves the Echo, and the
- * recordings are deleted when it is done.  See enroll.c and docs/GUIDE.md. */
+ * recordings are deleted when it is done. A downloaded stock Computer MSWW set selects msww_train, per-word
+ * calibration, target-only packaging and packaged-engine replay. Legacy-only devices keep pryon_train.
+ * See enroll.c, docs/GUIDE.md and docs/re-pryon-msww.md. */
 #ifndef ENROLL_H
 #define ENROLL_H
 #include <stddef.h>

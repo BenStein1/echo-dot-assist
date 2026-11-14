@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,6 +113,72 @@ static int rename_word(char *text, size_t *len, size_t cap, const char *key)
     return n;
 }
 
+/* The stock MSWW set has several callable spotters even though its folder is
+ * named for just one. Keep COMPUTER alone, before renaming it to the new word. */
+static int msww_single(char *text, size_t *len, size_t cap, int keyword)
+{
+    char names[MAX_RANGES][64]; int count = 0, targets = 0; struct json j = {0};
+    if (json_parse(&j, text, *len)) { json_free(&j); return -1; }
+    for (int k = 0; k < j.n; k++) if (json_type(&j, k) == J_OBJ) {
+        int arr = json_get(&j, k, keyword ? "keyword-spotters" : "rules");
+        if (arr < 0) continue;
+        if (json_type(&j, arr) != J_ARR) { json_free(&j); return -1; }
+        JSON_EACH(&j, arr, item) {
+            char name[64]; int token = json_get(&j, item, "name");
+            if (json_type(&j, token) != J_STR || j.t[token].end - j.t[token].start >= (int)sizeof name ||
+                !json_str(&j, token, name, sizeof name)) { json_free(&j); return -1; }
+            if (!strcmp(name, "COMPUTER")) { targets++; continue; }
+            int seen = 0; for (int n = 0; n < count; n++) if (!strcmp(names[n], name)) seen = 1;
+            if (!seen) { if (count == MAX_RANGES) { json_free(&j); return -1; } snprintf(names[count++], sizeof names[0], "%s", name); }
+        }
+    }
+    json_free(&j);
+    if ((keyword && targets != 1) || (!keyword && !targets)) return -1;
+    for (int i = 0; i < count; i++) if (enroll_strip_named(text, len, cap, names[i]) < 1) return -1;
+    return 0;
+}
+
+static int rename_computer(char *text, size_t *len, size_t cap, const char *key, int json)
+{
+    const char *old = json ? "\"COMPUTER\"" : "COMPUTER"; size_t ol = strlen(old), kl = strlen(key) + (json ? 2 : 0);
+    char *p = text; int count = 0;
+    while ((p = strstr(p, old))) {
+        if (*len - ol + kl + 1 > cap) return -1;
+        memmove(p + kl, p + ol, *len - (size_t)(p + ol - text) + 1);
+        if (json) { *p = '"'; memcpy(p + 1, key, kl - 2); p[kl - 1] = '"'; }
+        else memcpy(p, key, kl);
+        *len = *len - ol + kl; p += kl; count++;
+    }
+    return count;
+}
+
+static int msww_thresholds(char *text, size_t *len, size_t cap, double accept, double notify, double decay)
+{
+    struct json j = {0}; struct { int from, to; char value[32]; } edits[MAX_RANGES]; int count = 0, have[5] = {0};
+    static const char *keys[] = {"accept-threshold", "notify-threshold", "decay-rate", "scorer-index", "lock-period"};
+    double values[] = {accept, notify, decay, 12, 100};
+    if (json_parse(&j, text, *len)) { json_free(&j); return -1; }
+    for (int i = 0; i < j.n; i++) if (json_type(&j, i) == J_OBJ) for (int k = 0; k < 5; k++) {
+        int t = json_get(&j, i, keys[k]); if (t < 0) continue;
+        if (count == MAX_RANGES || json_type(&j, t) != J_NUM) { json_free(&j); return -1; }
+        edits[count].from = j.t[t].start; edits[count].to = j.t[t].end;
+        snprintf(edits[count].value, sizeof edits[count].value, "%.9g", values[k]); count++; have[k]++;
+    }
+    json_free(&j);
+    if (!have[0] || !have[1] || have[2] != 1 || have[3] != 1 || have[4] != 1) return -1;
+    /* JSON traversal adds keys in our order, not source order. */
+    for (int a = 0; a < count; a++) for (int b = a + 1; b < count; b++) if (edits[a].from < edits[b].from) {
+        int f = edits[a].from, t = edits[a].to; char v[32]; memcpy(v, edits[a].value, sizeof v);
+        edits[a] = edits[b]; edits[b].from = f; edits[b].to = t; memcpy(edits[b].value, v, sizeof v);
+    }
+    for (int i = 0; i < count; i++) {
+        size_t from = edits[i].from, to = edits[i].to, n = strlen(edits[i].value);
+        if (*len - (to - from) + n + 1 > cap) return -1;
+        memmove(text + from + n, text + to, *len - to + 1); memcpy(text + from, edits[i].value, n); *len = *len - (to - from) + n;
+    }
+    return 0;
+}
+
 /* Match every runtime state to the threshold used by pq_accepts. Alexa's lower playback/alarm values were
  * calibrated for Alexa's head, not a newly fitted custom head. Leave notify thresholds and unrelated settings alone. */
 int enroll_thresholds(char *text, size_t *len, size_t cap)
@@ -215,7 +282,8 @@ static int mkdirs(const char *root, const char *name)           /* the folders o
     return 0;
 }
 
-int enroll_make_set(const char *base, const char *candidate, const char *dest, const char *key, const char *note, char *err, size_t errsz)
+static int make_set(const char *base, const char *candidate, const char *dest, const char *key, const char *note,
+                    int msww, double accept, double notify, double decay, char *err, size_t errsz)
 {
     static char names[MAX_FILES][128]; char from[512], to[512], *text = NULL; size_t len; int n, rc = -1;
     if (mkdir(dest, 0755)) { say(err, errsz, "cannot make the set's folder"); return -1; }
@@ -225,12 +293,38 @@ int enroll_make_set(const char *base, const char *candidate, const char *dest, c
     for (int i = 0; i < n; i++) {
         snprintf(to, sizeof to, "%.255s/%.127s", dest, names[i]);
         if (mkdirs(dest, names[i])) { say(err, errsz, "cannot make a folder of the set"); goto out; }
-        if (!strcmp(names[i], ENROLL_MODEL)) { snprintf(from, sizeof from, "%s", candidate); model = 1; }
+        if (!strcmp(names[i], msww ? "multi-wakeword-wakeworddecoder/odyssey_msww.streaming.fixed.int8.onnx" : ENROLL_MODEL)) { snprintf(from, sizeof from, "%s", candidate); model = 1; }
         else snprintf(from, sizeof from, "%.255s/%.127s", base, names[i]);
         if (copy_file(from, to)) { say(err, errsz, "cannot copy the set (space?)"); goto out; }
     }
     if (!model) { say(err, errsz, "the Echo's own wake word set has no model to replace"); goto out; }
 
+    if (msww) {
+        static const char *config[] = {"BDPGeneratedFiles/kw.cfg.json", "BDPGeneratedFiles/op.cfg.json"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(to, sizeof to, "%s/%s", dest, config[i]);
+            if (read_all(to, &text, &len, CONF_MAX)) { say(err, errsz, "the MSWW set lacks its keyword configuration"); goto out; }
+            size_t cap = len + 4096;
+            if (msww_single(text, &len, cap, i == 0) || rename_computer(text, &len, cap, key, 1) < 1 ||
+                (i == 0 && msww_thresholds(text, &len, cap, accept, notify, decay))) {
+                say(err, errsz, "the stock MSWW keyword configuration is unsupported"); goto out;
+            }
+            unlink(to); if (write_all(to, text, len)) { say(err, errsz, "cannot write the MSWW keyword configuration"); goto out; }
+            free(text); text = NULL;
+        }
+        static const char *wordfiles[] = {"BDPGeneratedFiles/words.shrunk.txt", "encoder/words.shrunk.txt"};
+        for (int i = 0; i < 2; i++) {
+            snprintf(to, sizeof to, "%s/%s", dest, wordfiles[i]);
+            if (access(to, F_OK) && errno == ENOENT) continue;
+            if (read_all(to, &text, &len, 4096)) { say(err, errsz, "the MSWW word list is unsupported"); goto out; }
+            int renamed = rename_computer(text, &len, len + 4096, key, 0);
+            /* The encoder may retain its original Alexa/Stop symbol table;
+             * only the decoder's table necessarily contains COMPUTER. */
+            if (renamed < 0 || (i == 0 && !renamed)) { say(err, errsz, "the MSWW word list is unsupported"); goto out; }
+            unlink(to); if (write_all(to, text, len)) { say(err, errsz, "cannot write the MSWW word list"); goto out; }
+            free(text); text = NULL;
+        }
+    } else {
     /* the word in Alexa's place, STOP out */
     static const char *conf[] = { "kw.cfg.json", "op.cfg.json", "watermark.cfg.json" };
     for (int c = 0; c < 3; c++) {
@@ -256,6 +350,7 @@ int enroll_make_set(const char *base, const char *candidate, const char *dest, c
     char words[160]; snprintf(words, sizeof words, "<eps> 0\n%s 1\nSTOP 2\n", key);
     unlink(to);
     if (write_all(to, words, strlen(words))) { say(err, errsz, "cannot write the word list"); goto out; }
+    }
 
     snprintf(to, sizeof to, "%s/%s", dest, ENROLL_MARK);
     if (write_all(to, note, strlen(note))) { say(err, errsz, "cannot write the set's note"); goto out; }
@@ -283,4 +378,16 @@ out:
     free(text);
     if (rc) remove_tree(dest);
     return rc;
+}
+
+int enroll_make_set(const char *base, const char *candidate, const char *dest, const char *key, const char *note, char *err, size_t errsz)
+{ return make_set(base, candidate, dest, key, note, 0, 0, 0, 0, err, errsz); }
+
+int enroll_make_msww_set(const char *base, const char *candidate, const char *dest, const char *key, const char *note,
+                         double accept, double notify, double decay, char *err, size_t errsz)
+{
+    if (!isfinite(accept) || !isfinite(notify) || !isfinite(decay) || accept <= 0 || accept > 1 || notify < 0 || notify > accept || decay < 0 || decay >= 1) {
+        say(err, errsz, "invalid MSWW calibration"); return -1;
+    }
+    return make_set(base, candidate, dest, key, note, 1, accept, notify, decay, err, errsz);
 }

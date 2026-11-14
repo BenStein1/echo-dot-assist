@@ -6,7 +6,10 @@ requires strict held-recording real-engine replay before returning success.
 Generic JARVIS manifest/packaging and split/gate regressions are checked by
 `tools/msww/test_enrollment.py` and `test_pack.py`; replay-loss checks remain in
 `test_gate.py`. No new accuracy measurement or deployment is implied. The web
-enrollment path still uses the old head; on-device MSWW integration is pending.
+enrollment path now selects native MSWW when its stock source is available,
+calibrates per word, and requires exact packaged-engine replay before committing.
+Native host/ARM synthetic tests and stock-engine load validate plumbing, not
+new word accuracy. No new enrollment or deployment is implied.
 Details: `docs/re-pryon-msww.md`, "Reusable host generation pipeline".
 
 Other models: `devices/` (layout and porting guide in [devices/README.md](devices/README.md)); this plan is the donut's.

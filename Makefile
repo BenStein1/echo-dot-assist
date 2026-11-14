@@ -55,7 +55,7 @@ FORCE:
 BIN := $(OUT)/hassmic $(OUT)/runas $(OUT)/otatool $(if $(filter %screen.c,$(SCREEN)),$(OUT)/libhmui.so) \
        $(if $(filter libmixerAPI.so,$(LIBS)),$(OUT)/mixcap $(OUT)/mixplay $(OUT)/latency) \
        $(if $(filter -lOpenSLES,$(SYSLIBS)),$(OUT)/slplay) \
-       $(if $(filter libpryon.so,$(LIBS)),$(OUT)/pryon_test $(OUT)/aed_test $(OUT)/whisper_test $(OUT)/pryon_extract $(OUT)/pryon_train)
+       $(if $(filter libpryon.so,$(LIBS)),$(OUT)/pryon_test $(OUT)/aed_test $(OUT)/whisper_test $(OUT)/pryon_extract $(OUT)/pryon_train $(OUT)/msww_train)
 
 .DEFAULT_GOAL := all
 all: $(BIN)
@@ -205,6 +205,14 @@ build/pryon_train-host: src/tools/pryon_train.c src/tools/pryon_qat.c src/tools/
 	@mkdir -p build
 	cc -O2 -Wall -Wextra -Wno-misleading-indentation -ffp-contract=off -Isrc/hassmic src/tools/pryon_train.c src/tools/pryon_qat.c src/hassmic/json.c src/hassmic/hash.c -o $@ -lm
 
+$(OUT)/msww_train: src/tools/msww_train.c src/tools/msww_row.c src/hassmic/json.c src/hassmic/json.h
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -O3 -ffp-contract=off -Werror -Isrc/hassmic src/tools/msww_train.c src/hassmic/json.c -o $@ -pie -fuse-ld=lld -lm
+
+build/msww_train-host: src/tools/msww_train.c src/tools/msww_row.c src/hassmic/json.c src/hassmic/json.h
+	@mkdir -p build
+	cc -O2 -Wall -Wextra -Wno-misleading-indentation -ffp-contract=off -Isrc/hassmic src/tools/msww_train.c src/hassmic/json.c -o $@ -lm
+
 # Offline refinement packages exactly the same way as on-device enrollment; vendor files remain private.
 build/pryon_pack-host: src/tools/pryon_pack.c src/hassmic/enroll_pkg.c src/hassmic/json.c src/hassmic/hash.c
 	@mkdir -p build
@@ -264,8 +272,10 @@ UNIT := src/hassmic/hash.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.
 # One target per test, so make -j unit runs them side by side (tests/run.py does: most of them wait or compile).
 UNIT_TESTS := hash ws noise ble_crypto micgain micend afemeta wordtail wakealign wifimotion spkgain tz statefile ledq micdenoise earsup dha_jwt a2dp_codecs \
 	sbc web_crypto web_tar web_soundpack web_matrix web_loudness ring_pack mww blueprint_dropin buttons buttons_privacy buttons_grab afe_parcel lux ring_band sounds wifictl ringbar volcurve band_map setup_wipe firmware kiosk backlight \
-	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release pryon_qat enroll_pkg enroll_state enroll_ui prepare_negatives stream_windows
+	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release pryon_qat enroll_pkg enroll_state enroll_ui prepare_negatives stream_windows msww_native
 unit: $(addprefix unit-,$(UNIT_TESTS))
+unit-msww_native: build/msww_train-host
+	python3 tests/msww_native_test.py
 unit-pryon_qat:
 	@mkdir -p build
 	cc -O2 -Wall -Wno-misleading-indentation -ffp-contract=off tests/unit/pryon_qat_test.c src/tools/pryon_qat.c -lm -o build/pryon_qat_test && build/pryon_qat_test

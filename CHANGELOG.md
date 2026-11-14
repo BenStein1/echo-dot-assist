@@ -6,8 +6,12 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 - **Host-side experimental MSWW generation:** explicit per-word training inputs,
   target-only packaging and mandatory independent-recording replay now run in
-  one `tools/msww/candidate.py build` command. This does not replace the settings
-  page's older on-device trainer; see `docs/re-pryon-msww.md`.
+  one `tools/msww/candidate.py build` command.
+- **On-device generation uses MSWW when the stock downloaded Computer set is
+  available:** a native trainer retains competing classes, calibrates each word
+  independently, and requires packaged-engine replay before installation.
+  Legacy-only devices retain their existing backend; no existing word is changed.
+  See `docs/re-pryon-msww.md` for validation limits.
 
 ## 2026-11-12
 

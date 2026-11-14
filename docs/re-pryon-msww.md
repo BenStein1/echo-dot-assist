@@ -1,5 +1,61 @@
 # Amazon's multi-word wake word sets (msww): how five words share one engine
 
+### Reusable host generation pipeline — 2026-11-13
+
+The installed Nova trial uses a newly fitted row in the **15-class MSWW decoder**,
+not the older Alexa binary head. Other network classes still compete with the
+new word, while only the target spotter and its state rules may emit callbacks.
+Ben reports that the fresh room test seemed to work. That is useful personal
+validation, not a measured guarantee for every word/speaker/room.
+
+`candidate.py build` now applies that method to explicit **per-word** data:
+
+```sh
+OPENBLAS_NUM_THREADS=1 build/pryon-review-venv/bin/python tools/msww/candidate.py build \
+  build/msww/jarvis/enrollment.json build/msww/jarvis/model.json \
+  build/msww/computer-en-US build/msww/jarvis/set build/msww/jarvis/replay.json
+```
+
+Manifest paths are relative to the manifest; raw names must match recording
+names. Example schema (supply at least two `train`, one negative `dev`, and
+independent `held` recordings, not just this single illustrative entry):
+
+```json
+{"word":"JARVIS","recordings":[
+  {"name":"session1","split":"train","raw":"session1.raw",
+   "features":"session1.feat","windows":{"pos":[[2.0,3.2]],"speech":[[5.0,7.0]]}}
+]}
+```
+
+Use continuous 16 kHz signed-16-bit little-endian mono audio and features from
+`pryon_extract -w` of **the same padded stream and stock MSWW source set**.
+Windows are seconds in that stream; positive windows include the trainer's
+0.3 s lead / 0.2 s tail margins. Word identity must be the uppercase identifier
+used by the spotter. Use genuine examples of that word, not Nova recordings
+renamed via `--word`. Choose splits by original recording before fitting;
+identical audio under multiple names is rejected, but the caller must keep
+related/augmented recordings in the same split. This path accepts no automatic
+augmentation. `dev` is negative speech/background; include confusable words
+(such as hello), replies, and real-room noise in held audio, alongside fresh
+positive examples. Do not tune against held results and call them held-out.
+
+The command chooses hyperparameters/thresholds within training/development data,
+fits the final quantized row, packages only the target spotter, then replays only
+the held recordings through the real engine. It fails on any missed labeled
+word, false/ignored accept, non-target accept, dropped audio, or simulator/engine
+count/time/score mismatch. Failed local artifacts remain for inspection; nothing
+is installed or selected automatically. A successful small replay is not broad
+accuracy certification. Keep Amazon-derived models and personal audio in ignored
+`build/`; use the existing signed artifact path and reversible trial for delivery.
+
+**Scope:** this integrates the host MSWW generation pipeline, **not** the settings
+page's `enroll.c` pipeline. That still uses `pryon_train` and the old Alexa head.
+Replacing it requires the MSWW data/pool conversion, ONNX row writer, calibration
+and packaged replay to work on-device; do not silently claim UI-generated words
+use this method. Existing stock words and microWakeWord are unchanged.
+
+Checks: `python3 tools/msww/test_enrollment.py`, `test_pack.py`, `test_gate.py`.
+
 Status: **research prototype; NOT accepted for deployment. See recovery review below.**
 Source: `/data/local/hassmic/models/{alexa,amazon,computer,echo,ziggy}-en-US/` on the Dot (Amazon's downloaded model sets;
 a copy of `computer-en-US` was pulled to `/tmp/amz/computer` while researching). Amazon-derived: keep out of git.

@@ -24,6 +24,13 @@ class SingleWordPackage(unittest.TestCase):
             with self.subTest(names=names), self.assertRaises(ValueError):
                 single_word_configs({'keyword-orchestra': {'keyword-spotters': [dict(name=n) for n in names]}}, {}, 'NOVA')
 
+    def test_another_word(self):
+        kw = {'keyword-orchestra': {'keyword-spotters': [dict(name=n) for n in ('COMPUTER', 'JARVIS', 'STOP')]}}
+        op = {'sleep': {'rules': [dict(name=n) for n in ('JARVIS', 'STOP')]}}
+        kw, op = single_word_configs(kw, op, 'JARVIS')
+        self.assertEqual(kw['keyword-orchestra']['keyword-spotters'], [dict(name='JARVIS')])
+        self.assertEqual(op['sleep']['rules'], [dict(name='JARVIS')])
+
 
 if __name__ == '__main__':
     unittest.main()

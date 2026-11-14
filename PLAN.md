@@ -1,5 +1,14 @@
 # Echo Dot 3 (donut) → Home Assistant voice satellite
 
+MSWW host pipeline update (2026-11-13): `candidate.py build` accepts explicit
+per-word train/dev/held recording manifests, packages a target-only spotter and
+requires strict held-recording real-engine replay before returning success.
+Generic JARVIS manifest/packaging and split/gate regressions are checked by
+`tools/msww/test_enrollment.py` and `test_pack.py`; replay-loss checks remain in
+`test_gate.py`. No new accuracy measurement or deployment is implied. The web
+enrollment path still uses the old head; on-device MSWW integration is pending.
+Details: `docs/re-pryon-msww.md`, "Reusable host generation pipeline".
+
 Other models: `devices/` (layout and porting guide in [devices/README.md](devices/README.md)); this plan is the donut's.
 
 Goal: keep Amazon's audio front end (`mixer` + `libasp`: AEC, beamforming, mic calibration, speaker path),

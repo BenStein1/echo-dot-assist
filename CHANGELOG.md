@@ -2,6 +2,13 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-13
+
+- **Host-side experimental MSWW generation:** explicit per-word training inputs,
+  target-only packaging and mandatory independent-recording replay now run in
+  one `tools/msww/candidate.py build` command. This does not replace the settings
+  page's older on-device trainer; see `docs/re-pryon-msww.md`.
+
 ## 2026-11-12
 
 - **A tighter wall between hassmic and root (issue #130).** If something ever took hassmic over, it could have had

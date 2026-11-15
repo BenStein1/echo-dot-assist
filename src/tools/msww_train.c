@@ -17,7 +17,7 @@
 #define SLOT 12
 #define MAX_CLIPS 64
 #define MAX_CYCLES 4096
-struct clip { char path[1200]; int label, split; unsigned expected_cycles; };
+struct clip { char path[1200]; int label, split, pool, fit_only; unsigned expected_cycles; double start, end; };
 struct row { int8_t q[D]; float scale, bias; int32_t zero, sums; };
 struct blob { unsigned char *p; size_t n; };
 struct pb { unsigned id, wire; uint64_t val; unsigned char *p; size_t n; };
@@ -128,34 +128,52 @@ static int load_manifest(const char *path,struct clip *c,int *count)
     if(!bad)JSON_EACH(&j,0,k){char file[200],split[16];
         if(!json_str(&j,json_get(&j,k,"path"),file,sizeof file)||!safe_name(file)||
            !json_str(&j,json_get(&j,k,"split"),split,sizeof split)){bad=1;break;}
+        int ws=json_get(&j,k,"word_start"),we=json_get(&j,k,"word_end"),pt=json_get(&j,k,"pool"),ft=json_get(&j,k,"fit_only");
+        if((ws>=0&&json_type(&j,ws)!=J_NUM)||(we>=0&&json_type(&j,we)!=J_NUM)||
+           (pt>=0&&json_type(&j,pt)!=J_TRUE&&json_type(&j,pt)!=J_FALSE)||(ft>=0&&json_type(&j,ft)!=J_TRUE&&json_type(&j,ft)!=J_FALSE)){bad=1;break;}
+        c[i].pool=json_bool(&j,json_get(&j,k,"pool"),0);c[i].fit_only=json_bool(&j,json_get(&j,k,"fit_only"),0);
+        c[i].start=json_num(&j,json_get(&j,k,"word_start"),-1);c[i].end=json_num(&j,json_get(&j,k,"word_end"),-1);
+        if((c[i].start!=-1||c[i].end!=-1)&&(!isfinite(c[i].start)||!isfinite(c[i].end)||c[i].start<0||c[i].end<=c[i].start||c[i].end>300)){bad=1;break;}
         c[i].expected_cycles=0;c[i].label=json_int(&j,json_get(&j,k,"label"),-1);
         c[i].split=!strcmp(split,"train")?0:!strcmp(split,"dev")?1:!strcmp(split,"test")?2:-1;
         if(c[i].label<0||c[i].label>1||c[i].split<0||snprintf(c[i].path,sizeof c[i].path,"%s/%s",dir,file)>=(int)sizeof c[i].path){bad=1;break;}
         for(int k2=0;k2<i;k2++)if(!strcmp(c[k2].path,c[i].path)){bad=1;break;}
-        counts[c[i].split][c[i].label]++;i++;
+        if((c[i].pool&&(c[i].label||c[i].split==2))||(c[i].fit_only&&c[i].split!=0)){bad=1;break;}
+        if(!c[i].pool&&!c[i].fit_only)counts[c[i].split][c[i].label]++;i++;
     }
     if(counts[0][0]<5||counts[0][1]<5||!counts[1][0]||!counts[1][1]||counts[2][0]<2||counts[2][1]<2)bad=1;
     *count=i;free(b.p);json_free(&j);return bad?-1:0;
+}
+static int bounded_pool(const char *path,struct pool *p)
+{
+    FILE *f=fopen(path,"rb");if(!f)return -1;unsigned char header[8];uint32_t n=0;
+    int bad=rd(f,header,8);if(!bad)memcpy(&n,header+4,4);
+    if(bad||memcmp(header,"MSWP",4)||!n||n>100000||fseek(f,0,SEEK_END)||ftell(f)!=8+(long)n*528){fclose(f);return -1;}
+    fclose(f);return load_pool(path,p);
 }
 static int make_inputs(struct clip *c,int n,double seconds,const char *pool,const char *pos)
 {
     FILE *p=fopen(pool,"wb"),*q=fopen(pos,"wb");if(!p||!q){if(p)fclose(p);if(q)fclose(q);return -1;}
     uint32_t pn=0,qn=0;fwrite("MSWP",1,4,p);fwrite(&pn,4,1,p);fwrite("MSWQ",1,4,q);fwrite(&qn,4,1,q);int bad=0;
-    for(int k=0;k<n&&!bad;k++)if(c[k].split==0){struct features f={0};if(load_features(c[k].path,&f)){bad=1;break;}
-        if(c[k].expected_cycles&&abs((int)f.n-(int)c[k].expected_cycles)>2){free(f.data);bad=1;break;}
-        unsigned a=0,b=0;if(c[k].label){while(a<f.n&&(a+1)*.08<1.7)a++;b=a;while(b<f.n&&(b+1)*.08<2+seconds+.2)b++;
+    for(int k=0;k<n&&!bad;k++)if(c[k].split==0){
+        if(c[k].pool){struct pool extra={0};if(bounded_pool(c[k].path,&extra)||extra.n>100000){bad=1;}else for(uint32_t i=0;i<extra.n;i++){
+            uint8_t seq[4]={extra.seq[i],0,0,0};fwrite(extra.L+i,4,1,p);fwrite(extra.wt+i,4,1,p);fwrite(extra.sc+i,4,1,p);fwrite(seq,1,4,p);fwrite(extra.q+(size_t)i*D,1,D,p);pn++;}
+            free(extra.L);free(extra.wt);free(extra.sc);free(extra.seq);free(extra.q);continue;}
+        struct features f={0};if(load_features(c[k].path,&f)){bad=1;break;}
+        if((c[k].expected_cycles&&abs((int)f.n-(int)c[k].expected_cycles)>2)||(c[k].start>=0&&c[k].end>f.n*.08)){free(f.data);bad=1;break;}
+        unsigned a=0,b=0;if(c[k].label){if(c[k].start>=0){b=f.n;}else{while(a<f.n&&(a+1)*.08<1.7)a++;b=a;while(b<f.n&&(b+1)*.08<2+seconds+.2)b++;}
             uint32_t nc=b-a;if(!nc){free(f.data);bad=1;break;}fwrite(&nc,4,1,q);qn++;
-            for(unsigned i=a;i<b;i++){float *x=f.data+i*528+1,L=competing(x+D);uint32_t mask=(i+1)*.08>=2&&(i+1)*.08<=2+seconds;
+            for(unsigned i=a;i<b;i++){float *x=f.data+i*528+1,L=competing(x+D);uint32_t mask=c[k].start>=0?((i+1)*.08>=c[k].start&&(i+1)*.08<=c[k].end):((i+1)*.08>=2&&(i+1)*.08<=2+seconds);
                 fwrite(&L,4,1,q);fwrite(&mask,4,1,q);fwrite(x,4,D,q);}}
         int first=1;
-        for(unsigned i=0;i<f.n;i++){if(c[k].label&&i>=a&&i<b){first=1;continue;}
+        for(unsigned i=0;i<f.n;i++){if(c[k].label&&(c[k].start>=0?((i+1)*.08>=c[k].start&&(i+1)*.08<=c[k].end):(i>=a&&i<b))){first=1;continue;}
             float *x=f.data+i*528+1,L=competing(x+D),wt=1,sc=0;int8_t quant[D];uint8_t seq[4]={(uint8_t)(first?1:2),0,0,0};first=0;
             for(int j=0;j<D;j++)if(fabsf(x[j])>sc)sc=fabsf(x[j]);sc=fmaxf(sc/127,1e-8f);
             for(int j=0;j<D;j++)quant[j]=(int8_t)lrintf(x[j]/sc);
             fwrite(&L,4,1,p);fwrite(&wt,4,1,p);fwrite(&sc,4,1,p);fwrite(seq,1,4,p);fwrite(quant,1,D,p);pn++;
         }free(f.data);
     }
-    if(!pn||!qn||ferror(p)||ferror(q))bad=1;
+    if(!pn||pn>200000||!qn||ferror(p)||ferror(q))bad=1;
     if(fseek(p,4,SEEK_SET)||fseek(q,4,SEEK_SET)||fwrite(&pn,4,1,p)!=1||fwrite(&qn,4,1,q)!=1)bad=1;
     if(fclose(p))bad=1;if(fclose(q))bad=1;return bad?-1:0;
 }
@@ -189,8 +207,13 @@ static int calibrate(struct clip *c,int n,const struct row *r,double seconds,flo
     /* ponytail: the 16-prompt UI affords one dev recording per class, so fit
      * decay stays fixed while the fit and threshold use this small dev split.
      * More independent recordings would permit nested cross-validation. */
-    float pos=1,neg=0;for(int k=0;k<n;k++)if(c[k].split==1){float *s;unsigned nc;if(scores(c+k,r,&s,&nc))return -1;float peak=0;
-        for(unsigned i=0;i<nc;i++){double t=(i+1)*.08;if(c[k].label&&t>=1.7&&t<=seconds+2.7){if(s[i]>peak)peak=s[i];}
+    float pos=1,neg=0;for(int k=0;k<n;k++)if(c[k].split==1){
+        if(c[k].pool){struct pool p={0};if(bounded_pool(c[k].path,&p)||p.n>100000){free(p.L);free(p.wt);free(p.sc);free(p.seq);free(p.q);return -1;}
+            double sm=0;for(uint32_t i=0;i<p.n;i++){float x[D];for(int j=0;j<D;j++)x[j]=p.sc[i]*p.q[(size_t)i*D+j];
+                double v=sigmoid(row_score(x,r)-p.L[i]);if(p.seq[i]==0){if(v>neg)neg=v;sm=0;continue;}if(p.seq[i]==1)sm=0;sm=.6*sm+.4*v;if(sm>neg)neg=sm;}
+            free(p.L);free(p.wt);free(p.sc);free(p.seq);free(p.q);continue;}
+        float *s;unsigned nc;if(scores(c+k,r,&s,&nc))return -1;float peak=0;
+        for(unsigned i=0;i<nc;i++){double t=(i+1)*.08;if(c[k].label&&t>=(c[k].start>=0?c[k].start:1.7)&&t<=(c[k].end>=0?c[k].end+.2:seconds+2.7)){if(s[i]>peak)peak=s[i];}
             else if(s[i]>neg)neg=s[i];}
         if(c[k].label&&peak<pos)pos=peak;free(s);}
     if(!(pos>neg+.02)||pos<=0||neg>=1)return 1;
@@ -211,7 +234,12 @@ int main(int argc,char **argv)
     static char *l2[] = {"0.3", "3", "30"};
     static char *fraction[] = {"0.05", "0.15", "0.35"};
     struct row r;float accept=0,best=-1;unsigned best_li=0,best_pi=0;
-    for(unsigned li=0;li<3;li++)for(unsigned pi=0;pi<3;pi++){
+    /* The full-coverage recipe is fixed before personal calibration: one fit,
+     * not nine ~20-minute fits on an Echo. Legacy bundles retain their grid. */
+    int prepared=0,pool_counts[2]={0};for(int k=0;k<n;k++)if(clips[k].pool){prepared=1;pool_counts[clips[k].split]++;}
+    if(prepared)for(int k=0;k<n;k++)if(clips[k].label&&clips[k].start<0){fprintf(stderr,"prepared positives need word windows\n");return 2;}
+    if(prepared&&(pool_counts[0]!=1||pool_counts[1]!=1)){fprintf(stderr,"need one fitting and one calibration pool\n");return 2;}
+    for(unsigned li=0;li<(prepared?1u:3u);li++)for(unsigned pi=0;pi<(prepared?1u:3u);pi++){
         pid_t pid=fork();if(pid<0)return 2;
         if(!pid){char *args[]={"msww_row",pool,pos,row,"0.6",l2[li],fraction[pi],NULL};_exit(msww_fit_main(7,args));}
         int status;if(waitpid(pid,&status,0)!=pid||!WIFEXITED(status)||WEXITSTATUS(status)){fprintf(stderr,"MSWW row fit failed\n");return 1;}
@@ -226,12 +254,12 @@ int main(int argc,char **argv)
     /* The decoder and thresholds are frozen before any test feature is opened. */
     FILE *out=fopen(expected,"wx");if(!out)return 1;
     fprintf(out,"{\"accept\":%.9g,\"notify\":%.9g,\"decay\":0.6,\"recordings\":[",accept,accept/4);
-    int counts[2][4]={{0}},bad=0;
-    for(int k=0;k<n;k++){float *s;unsigned nc;if(scores(clips+k,&r,&s,&nc)){bad=1;break;}
-        int events=0,lock=-1,correct=1;fprintf(out,"%s{\"path\":\"%s\",\"events\":[",k?",":"",strrchr(clips[k].path,'/')+1);
+    int counts[2][4]={{0}},bad=0,emitted=0;
+    for(int k=0;k<n;k++){if(clips[k].pool||clips[k].fit_only)continue;float *s;unsigned nc;if(scores(clips+k,&r,&s,&nc)){bad=1;break;}
+        int events=0,lock=-1,correct=1;fprintf(out,"%s{\"path\":\"%s\",\"events\":[",emitted++?",":"",strrchr(clips[k].path,'/')+1);
         for(unsigned i=0;i<nc;i++)if((int)(8*(i+1))>lock&&s[i]>=accept){
             unsigned sample=1280*(i+1);fprintf(out,"%s[%u,%.9g]",events?",":"",sample,s[i]);events++;lock=8*(i+1)+100;
-            if(sample/16000.0<1.7||sample/16000.0>seconds+2.7)correct=0;
+            if(sample/16000.0<(clips[k].start>=0?clips[k].start:1.7)||sample/16000.0>(clips[k].end>=0?clips[k].end+.2:seconds+2.7))correct=0;
         }fputs("]}",out);free(s);
         int hit=events==1&&correct,outcome=clips[k].label?(hit?0:1):(events?2:3);counts[clips[k].split==2][outcome]++;
         if((clips[k].label&&!hit)||(!clips[k].label&&events))bad=1;

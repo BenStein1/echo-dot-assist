@@ -657,6 +657,8 @@ static int msww_parameters(const char *candidate, double *accept, double *notify
 static int trainer_failed(int msww, int rc, int have, int rejected)
 { return !have || (rc && !(msww && rc == 1 && rejected)); }
 
+#include "enroll_msww.h"
+
 static int job(char *dir)
 {
     char ext[300], trn[300], bdir[300], p[500], pad[400], feat[400], manifest[400], model[400], cand[400], f1[300], f2[300];
@@ -672,17 +674,25 @@ static int job(char *dir)
     snprintf(pad, sizeof pad, "%s/padded.raw", dir);
     pthread_mutex_lock(&lk); S.job_at = time(NULL); S.progress = 0; S.state = ST_EXTRACTING; pthread_mutex_unlock(&lk);
 
+    int prepared=msww?msww_prepare_bundle(dir,model,S.phrase):0;double word_start[CLIPS]={0},word_end[CLIPS]={0};
+    if(prepared<0){finish(ST_FAILED,"","The shared training pools are invalid or do not match this wake-word engine.");return -1;}
+    if(prepared){struct statvfs sv;if(statvfs(dir,&sv)||(long long)sv.f_bavail*sv.f_frsize<(128L<<20)){finish(ST_FAILED,"","Not enough free space for training (128 MB needed).");return -1;}}
     FILE *m = fopen(manifest, "w");
     if (!m) { finish(ST_FAILED, "", "Cannot write in the Echo's state folder."); return -1; }
     fputs("[", m);
     for (int i = 0; i < CLIPS; i++) {
         int label = i < PER_CLASS, k = label ? i : i - PER_CLASS;
         const char *split = k >= PER_CLASS - HELD_OUT ? "test" : msww && k == PER_CLASS - HELD_OUT - 1 ? "dev" : "train";
-        fprintf(m, "%s{\"path\":\"features-%02d.bin\",\"label\":%d,\"split\":\"%s\"}", i ? "," : "", i, label, split);
+        fprintf(m, "%s{\"path\":\"features-%02d.bin\",\"label\":%d,\"split\":\"%s\"", i ? "," : "", i, label, split);
+        if(prepared&&label){snprintf(p,sizeof p,"%s/clip-%02d.raw",dir,i);
+            if(msww_word_window(p,word_start+i,word_end+i)){fclose(m);finish(ST_FAILED,"","A word recording has no single clear speech interval.");return -1;}
+            fprintf(m,",\"word_start\":%.6f,\"word_end\":%.6f",word_start[i],word_end[i]);}
+        fputs("}",m);
     }
     int negatives[2] = {0};
     /* Old-head features are not interchangeable with MSWW activations. */
-    int extra = msww ? corpus_negatives_mode(m, dir, model, S.phrase, negatives, 1) : corpus_negatives(m, dir, model, S.phrase, negatives);
+    int extra = prepared ? 0 : msww ? corpus_negatives_mode(m, dir, model, S.phrase, negatives, 1) : corpus_negatives(m, dir, model, S.phrase, negatives);
+    if(prepared)fputs(",{\"path\":\"pool-train.bin\",\"label\":0,\"split\":\"train\",\"pool\":true},{\"path\":\"pool-dev.bin\",\"label\":0,\"split\":\"dev\",\"pool\":true}",m);
     fputs("]\n", m); int manifest_bad = ferror(m); if (fclose(m)) manifest_bad = 1;
     if (extra < 0 || manifest_bad) { finish(ST_FAILED, "", "The shared negative corpus is invalid, incompatible, or has no usable train/test split."); return -1; }
 
@@ -711,7 +721,27 @@ static int job(char *dir)
         job_progress(0.45 * (i + 1) / CLIPS);
     }
 
-    pthread_mutex_lock(&lk); S.state = ST_TRAINING; snprintf(S.message, sizeof S.message, "Training your wake word"); pthread_mutex_unlock(&lk);
+    if(prepared){
+        m=fopen(manifest,"r+");if(!m||fseek(m,-2,SEEK_END)){if(m)fclose(m);finish(ST_FAILED,"","Cannot prepare training contexts.");return -1;}
+        static const int prefix[]={8,9,11};int bad=0;
+        /* Only the five fitting recordings of each class may supply contexts.
+         * Development (5/13) and final checks (6/7/14/15) are never augmented. */
+        for(int i=0;i<CLIPS&&!bad;i++)if(i<5||(i>=8&&i<13))for(int k=0;k<3&&!bad;k++){
+            if(cancelled()){fclose(m);return -1;}double offset;
+            snprintf(pad,sizeof pad,"%s/augment-%02d-%02d.raw",dir,i,prefix[k]);snprintf(feat,sizeof feat,"%s/augment-%02d-%02d.bin",dir,i,prefix[k]);
+            if(msww_augment_raw(dir,i,prefix[k],pad,&offset)){bad=1;break;}
+            char base[420];snprintf(base,sizeof base,"%s/pryon.manifest",bdir);char *args[]={ext,"-w",base,pad,feat,NULL};
+            pthread_mutex_lock(&lk);snprintf(S.message,sizeof S.message,"Reading training contexts for recording %d",i+1);pthread_mutex_unlock(&lk);
+            if(run_tool(args,0,extract_line,&o)){bad=1;break;}unlink(pad);
+            fprintf(m,",{\"path\":\"augment-%02d-%02d.bin\",\"label\":%d,\"split\":\"train\",\"fit_only\":true",i,prefix[k],i<8);
+            if(i<8)fprintf(m,",\"word_start\":%.6f,\"word_end\":%.6f",word_start[i]+offset,word_end[i]+offset);
+            fputs("}",m);
+        }
+        fputs("]\n",m);if(ferror(m))bad=1;if(fclose(m))bad=1;
+        if(bad){finish(ST_FAILED,"","The wake-word engine could not prepare the training contexts.");return -1;}
+    }
+
+    pthread_mutex_lock(&lk); S.state = ST_TRAINING; snprintf(S.message, sizeof S.message, prepared?"Training your wake word (about 20 minutes on this Echo)":"Training your wake word"); pthread_mutex_unlock(&lk);
     snprintf(cand, sizeof cand, "%s/candidate.onnx", dir);
     snprintf(argv_store[0], sizeof argv_store[0], "%s", trn); snprintf(argv_store[1], sizeof argv_store[1], "%s", model);
     snprintf(argv_store[2], sizeof argv_store[2], "%s", manifest); snprintf(argv_store[3], sizeof argv_store[3], "%s", cand);

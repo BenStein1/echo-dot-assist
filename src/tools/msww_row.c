@@ -52,8 +52,8 @@ static int load_pool(const char *path, struct pool *P)
         if (!okf(P->L[i]) || !okf(P->wt[i]) || P->wt[i] < 0 || !okf(P->sc[i]) || P->sc[i] <= 0 || h[0] > 2) { fclose(f); return -1; }
         P->seq[i] = h[0];
     }
-    fclose(f);
-    return 0;
+    int extra=fgetc(f);int bad=extra!=EOF||ferror(f);fclose(f);
+    return bad?-1:0;
 }
 
 static int load_pos(const char *path, struct pos *Q)

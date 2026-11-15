@@ -61,12 +61,12 @@ class NativeMSWW(unittest.TestCase):
         self.manifest = self.path / 'features.json'
         self.manifest.write_text(json.dumps(rows))
 
-    def features(self, name, label, seed=0):
+    def features(self, name, label, seed=0, cycles=87, offset=0):
         with (self.path / name).open('wb') as f:
             f.write(struct.pack('<4I', 0x46595250, 2, 512, 15))
-            for i in range(87):
+            for i in range(cycles):
                 t = (i + 1) * .08
-                x = [4. if label and 2.2 < t < 2.7 else -1., (seed + 1) * .001] + [0.] * 510
+                x = [4. if label and 2.2+offset < t < 2.7+offset else -1., (seed + 1) * .001] + [0.] * 510
                 f.write(struct.pack('<528f', i * 1280., *x, *([0.] * 15)))
 
     def run_native(self, dest):
@@ -117,6 +117,53 @@ class NativeMSWW(unittest.TestCase):
         result = self.run_native(dest)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(dest.exists())
+
+    def prepared_inputs(self):
+        for r in self.rows:
+            if r['label']:
+                r.update(word_start=2.1, word_end=3.0)
+        for split, level in [('train', 1.), ('dev', .8)]:
+            path = self.path / (split + '.pool')
+            body = b''.join(struct.pack('<fff4B512b', 2.6390574, 1., level/127, 1 if i == 0 else 2, 0, 0, 0, -127, *([0]*511)) for i in range(30))
+            path.write_bytes(b'MSWP' + struct.pack('<I', 30) + body)
+            self.rows.append(dict(path=path.name, label=0, split=split, pool=True))
+        for label in (1, 0):
+            name = f'context-{label}.bin'
+            self.features(name, label)
+            self.rows.append(dict(path=name, label=label, split='train', fit_only=True,
+                                  **(dict(word_start=2.1, word_end=3.) if label else {})))
+        self.manifest.write_text(json.dumps(self.rows))
+
+    def test_prepared_single_fit_and_original_checks_are_held_independent(self):
+        self.prepared_inputs()
+        dest = self.path / 'prepared.onnx'
+        result = self.run_native(dest)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stderr.count('round 0:'), 1)
+        report = json.loads(Path(str(dest)+'.replay.json').read_text())
+        self.assertEqual(len(report['recordings']), 16)
+        frozen = dest.read_bytes()
+        self.features('features-06.bin', 0)
+        second = self.path / 'miss.onnx'
+        result = self.run_native(second)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(second.read_bytes(), frozen)
+        self.assertEqual(json.loads(Path(str(second)+'.replay.json').read_text())['accept'], report['accept'])
+
+    def test_prepared_pool_corruption_or_missing_calibration_fails_closed(self):
+        self.prepared_inputs()
+        self.rows = [r for r in self.rows if r['path'] != 'dev.pool']
+        self.manifest.write_text(json.dumps(self.rows))
+        result = self.run_native(self.path / 'missing.onnx')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.path / 'missing.onnx').exists())
+        self.rows.append(dict(path='dev.pool', label=0, split='dev', pool=True))
+        self.manifest.write_text(json.dumps(self.rows))
+        with (self.path / 'train.pool').open('ab') as f:
+            f.write(b'unexpected trailing payload')
+        result = self.run_native(self.path / 'corrupt.onnx')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.path / 'corrupt.onnx').exists())
 
     @unittest.skipIf(os.environ.get('MSWW_QEMU'), 'orchestration harness is a host test; native backend is tested on ARM separately')
     def test_real_enrollment_job_routes_msww_and_blocks_bad_replay(self):
@@ -175,19 +222,37 @@ sys.exit(0 if r['events'] else 3)
         extract.chmod(0o755)
         engine.chmod(0o755)
         state = self.path/'state'; state.mkdir()
-        for fail in (False, True):
-            jobdir = self.path/('bad-job' if fail else 'good-job'); jobdir.mkdir()
+        self.prepared_inputs()
+        import hashlib
+        bundle=dict(version=1,word='Jarvis',source_sha256=hashlib.sha256(self.source.read_bytes()).hexdigest(),
+                    fitting_speakers=['fit'],calibration_speakers=['calibration'])
+        for split,key in [('train','fitting_pool'),('dev','calibration_pool')]:
+            path=self.path/(split+'.pool');bundle[key]=dict(path=path.name,sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        pool_manifest=self.path/'pool-manifest.json';pool_manifest.write_text(json.dumps(bundle))
+        for i in list(range(5))+list(range(8,13)):
+            for prefix in [8,9,11]:
+                self.features(f'augment-{i:02d}-{prefix:02d}.bin',i<8,cycles=143,offset=3.5)
+        for prepared,fail in [(False,False),(False,True),(True,False),(True,True)]:
+            tag=('prepared-' if prepared else '')+('bad' if fail else 'good')
+            jobdir=self.path/(tag+'-job');jobdir.mkdir()
             for i in range(16):
-                (jobdir/f'clip-{i:02d}.raw').write_bytes(bytes(3*32000))
+                pcm=[100]*(3*16000)
+                if i<8:pcm[3200:11200]=[5000]*8000
+                (jobdir/f'clip-{i:02d}.raw').write_bytes(struct.pack('<%dh'%len(pcm),*pcm))
             env = dict(os.environ, HASSMIC_ENROLL_BASE=str(base), HASSMIC_STATE=str(state),
                        HASSMIC_PRYON_EXTRACT=str(extract), HASSMIC_MSWW_TRAIN=str(ROOT/'build/msww_train-host'),
                        HASSMIC_PRYON_TEST=str(engine), HASSMIC_ENROLL_MSWW_NEGATIVES=str(self.path/'absent.json'),
-                       TEST_STAGE=str(self.path/('bad-stage' if fail else 'good-stage')), TEST_FIXTURES=str(self.path))
+                       HASSMIC_ENROLL_MSWW_POOL=str(pool_manifest if prepared else self.path/'absent-pool.json'),
+                       TEST_STAGE=str(self.path/(tag+'-stage')), TEST_FIXTURES=str(self.path))
             if fail: env['FAIL_REPLAY']='1'
             result = subprocess.run([str(binary), str(jobdir)], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('committed=0' if fail else 'committed=1', result.stdout)
             self.assertIn('real-engine replay' if fail else 'test stops before root install', result.stdout)
+            if prepared:
+                manifest=json.loads((jobdir/'features.json').read_text())
+                self.assertEqual(sum(bool(r.get('fit_only')) for r in manifest),30)
+                self.assertEqual(len(json.loads((jobdir/'candidate.onnx.replay.json').read_text())['recordings']),16)
 
 
 if __name__ == '__main__':

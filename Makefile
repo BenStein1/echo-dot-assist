@@ -272,10 +272,12 @@ UNIT := src/hassmic/hash.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.
 # One target per test, so make -j unit runs them side by side (tests/run.py does: most of them wait or compile).
 UNIT_TESTS := hash ws noise ble_crypto micgain micend afemeta wordtail wakealign wifimotion spkgain tz statefile ledq micdenoise earsup dha_jwt a2dp_codecs \
 	sbc web_crypto web_tar web_soundpack web_matrix web_loudness ring_pack mww blueprint_dropin buttons buttons_privacy buttons_grab afe_parcel lux ring_band sounds wifictl ringbar volcurve band_map setup_wipe firmware kiosk backlight \
-	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release pryon_qat enroll_pkg enroll_state enroll_ui prepare_negatives stream_windows msww_native
+	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release pryon_qat enroll_pkg enroll_state enroll_ui prepare_negatives stream_windows msww_native msww_pool
 unit: $(addprefix unit-,$(UNIT_TESTS))
 unit-msww_native: build/msww_train-host
 	python3 tests/msww_native_test.py
+unit-msww_pool:
+	python3 tests/msww_pool_test.py
 unit-pryon_qat:
 	@mkdir -p build
 	cc -O2 -Wall -Wno-misleading-indentation -ffp-contract=off tests/unit/pryon_qat_test.c src/tools/pryon_qat.c -lm -o build/pryon_qat_test && build/pryon_qat_test
@@ -287,7 +289,7 @@ unit-enroll_ui:
 	node tests/unit/enroll_ui_test.js
 unit-enroll_state:
 	@mkdir -p build
-	cc -O1 -g -Wall -Wextra -Wno-unused-function -ffunction-sections -fdata-sections -fsanitize=address,undefined -Isrc/hassmic tests/unit/enroll_state_test.c src/hassmic/statefile.c src/hassmic/artifacts.c src/hassmic/json.c src/hassmic/hash.c -Wl,--gc-sections -lpthread -o build/enroll_state_test && build/enroll_state_test
+	cc -O1 -g -Wall -Wextra -Wno-unused-function -ffunction-sections -fdata-sections -fsanitize=address,undefined -Isrc/hassmic tests/unit/enroll_state_test.c src/hassmic/statefile.c src/hassmic/artifacts.c src/hassmic/json.c src/hassmic/hash.c -Wl,--gc-sections -lpthread -lm -o build/enroll_state_test && build/enroll_state_test
 unit-enroll_pkg:
 	@mkdir -p build
 	cc -O2 -Wall -Wextra -fsanitize=address,undefined -Isrc/hassmic tests/unit/enroll_pkg_test.c src/hassmic/enroll_pkg.c src/hassmic/json.c src/hassmic/hash.c -o build/enroll_pkg_test && build/enroll_pkg_test

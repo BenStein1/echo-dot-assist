@@ -387,3 +387,43 @@ supported access before trial delivery, persist any newly approved diagnostic
 identity under ignored local build state, and do not invent an authentication
 bypass. Nothing in this section establishes that the candidate is installed or
 that the wake-word problem is fixed.
+
+### Full-coverage on-Echo preparation (2026-11-14; not deployed)
+
+The existing enrollment path can consume a private per-phrase pool bundle at
+`/data/local/hassmic/enroll-msww-pool/manifest.json` (override:
+`HASSMIC_ENROLL_MSWW_POOL`). Generate it offline from an explicit negative
+feature manifest, then review before installing it:
+
+```sh
+python3 tools/msww/prepare_pool.py STOCK_DECODER.onnx NEGATIVE_FEATURES.json OUTPUT_DIRECTORY Nova
+```
+
+Each input row has `path`, `label:0`, `split:train|dev`, accurate `text`, and
+`speaker`. Original speakers and features must be disjoint across fitting and
+calibration; no final-test recordings enter this bundle. Optional
+`excluded_windows:[[start,end],...]` removes explicitly labelled positive or
+unresolved windows from an existing continuous recording. Transcript text must
+accurately describe the remaining negative audio and exclude the target phrase.
+Gaps reset temporal mining. Outputs are private, decoder-SHA256-bound,
+checksummed MSWP pools, never repository assets. Pool limits are 100,000 cycles
+each. A matching but corrupt/incompatible bundle fails closed; missing bundles
+or another phrase preserve legacy enrollment.
+
+With a matching bundle, enrollment measures a single speech interval in each
+original positive using the maintained energy/noise-floor rule, retaining the
+speech-boundary mask and tail. Only five fitting positives and five fitting
+negatives supply the 30 continuous negative-prefix context variants. The
+reserved development and final-test recordings never supply augmentation.
+The native backend appends personal negatives to the fitting pool, uses the
+separate calibration pool only for threshold calibration, and runs the fixed
+`.3` L2 / `.05` positive-fraction recipe once. It does not run nine expensive
+full-pool fits. Augmentation and pools are excluded from the original 16
+outcome/replay checks; all 16 original checks still have to pass. Legacy
+short-negative bundles and their selection grid are unchanged.
+
+One 76k-cycle native fit took roughly 20 CPU minutes on this Dot; context
+extraction adds time. The enhanced path requires 128 MB free working space.
+These source changes are not a deployment or acoustic certification. The
+reusable Nova baseline, prior diagnostic streams, and two unresolved `rdot`
+accepts remain distinct from fresh independent acceptance evidence.

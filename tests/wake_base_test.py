@@ -24,6 +24,19 @@ def pcm(value, n=64000):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_capture_acknowledgement_matches_exact_open_target(self):
+        d = wake.Device()
+        d.pid = 42
+        other = 'lrwx------ 1 user group 64 2026-11-14 17:00 3 -> '
+        with patch.object(d, 'shell', return_value=other + wake.CAPTURE + '.old'):
+            self.assertFalse(d.opened())
+        with patch.object(d, 'shell', return_value=other + wake.CAPTURE + '\n') as shell:
+            self.assertTrue(d.opened())
+            shell.assert_called_once_with('ls -l /proc/42/fd')
+        with patch.object(d, 'shell', side_effect=subprocess.CalledProcessError(1, 'ls')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                d.opened()  # A vanished daemon must not look like a stopped dump.
+
     def test_quality_rejects_isolated_transient_but_allows_short_utterance(self):
         for amplitude in (300, 32767):
             transient = pcm(0, 32000) + pcm(amplitude, 1) + pcm(0, 31999)

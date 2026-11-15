@@ -5,7 +5,6 @@ import array
 import datetime
 import hashlib
 import json
-import shlex
 import subprocess
 import sys
 import time
@@ -61,8 +60,11 @@ class Device:
 
     def opened(self):
         # Do not infer signal delivery from a successful kill: wait for the actual open file.
-        return self.shell(f'test -d /proc/{self.pid}/fd && for f in /proc/{self.pid}/fd/*; do '
-                          f'[ "$(readlink "$f")" = {shlex.quote(CAPTURE)} ] && echo open; done; true') == 'open'
+        # One procfs listing, not a shell/readlink process per descriptor: the
+        # latter adds ~1.8 s on the Echo, recording silence before GO and causing
+        # valid four-second takes to exceed the capture-length sanity limit.
+        listing = self.shell(f'ls -l /proc/{self.pid}/fd')
+        return any(line.endswith(' -> ' + CAPTURE) for line in listing.splitlines())
 
     def toggle(self, wanted):
         self.shell(f'kill -TTIN {self.pid}')

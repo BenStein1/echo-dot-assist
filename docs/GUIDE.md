@@ -218,6 +218,49 @@ word on your other Echos without training each, use Models, "Copy models" (or "M
 A generated set still contains Amazon model data from this Echo, with one classifier layer replaced. Do not include generated
 sets in published source or pull requests; this project has not established permission to redistribute those assets.
 
+#### Keep a reusable recording base (developer command)
+
+From the project checkout on your PC, run:
+
+```sh
+./scripts/wake-base.sh --connect 10.0.0.199 Nova
+```
+
+Replace the address/word for your Echo. This uses the existing signed temporary
+ADB-access helper (the local update key must already be configured). If ADB is
+already connected, `./scripts/wake-base.sh Nova` is enough.
+
+Press Enter for each of eight positives and eight negative sentences; wait for
+**GO**, speak once, then stay quiet until **STOP** (four seconds per take).
+Vary your usual distance/pace a little. No training starts and no model changes.
+Normal wake detection stays running, so avoid its currently selected wake word
+and keep music, replies and other microphone/capture sessions off meanwhile.
+Nearly silent/clipped or truncated takes are retried rather than accepted.
+
+The command prints the saved directory under
+`/data/local/hassmic/wake-base/<unique-id>/` on the Echo. It contains the original
+16-kHz mono s16le recordings and `manifest.json`: phrase, prompts, labels,
+checksums, quality measurements and fixed 6-training/2-test splits per class.
+This directory is private and separate from the enrollment UI's temporary
+`state/enroll` directory, so failed training/cleanup does not delete it. Each run
+creates a new dataset and never overwrites one. Recordings are read transiently
+by the local PC for level/checksum checks, not saved there or sent to a service.
+Interrupted sessions and rejected takes stay on-device; only a complete manifest
+is a usable full base. An existing debug `capture.raw` is restored afterward.
+If connection loss leaves `.capture-lock`, inspect the capture FD and incomplete
+set before clearing that empty lock directory; do not blindly toggle SIGTTIN.
+
+Use the printed manifest/raw files for subsequent feature extraction and
+training experiments instead of asking the speaker to record again. This is a
+recording base, not an automatic import into the normal enrollment UI. Repeated
+use makes its test recordings development evidence, not fresh final acoustic
+acceptance. Check prerequisites without recording:
+
+```sh
+./scripts/wake-base.sh --serial 10.0.0.199:5555 --check-device
+python3 tests/wake_base_test.py
+```
+
 ### microWakeWord
 
 [microWakeWord](https://github.com/kahrendt/microWakeWord) is the engine of ESPHome's own satellites (Home Assistant

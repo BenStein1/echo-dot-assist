@@ -3732,3 +3732,15 @@ Run in this order. Each step says what it proves.
       other models than the Echo Dot 3 and other languages than en-US (the base is the stock "Alexa" set); the interplay
       with "Wake word 2" and with arbitration (names must match across Echos); copying a trained word to another Echo through
       "Copy models" (the sets are ordinary `wake:<id>` artifacts, but it was not run between two Echos).
+
+### 2026-11-14 — reusable on-device recording base
+
+Added `scripts/wake-base.sh` / `tools/wake-base.py`: existing hassmic SIGTTIN
+post-AEC micAsr capture, eight positive/eight negative prompts, original raw audio
+and durable private manifest at `/data/local/hassmic/wake-base/<unique-id>`.
+No enrollment, model, threshold or installer changes. Last two/class marked
+held-out; repeated experiments are not fresh acoustic acceptance. Silent/clipped
+or truncated takes retry, prior debug dump is restored, incomplete takes remain.
+Four focused Python safety checks pass; real Echo preflight passes and persistent
+private base directory exists. No microphone take or model change was performed
+as part of installation. User must run the interactive command when ready.

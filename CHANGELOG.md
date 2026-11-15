@@ -2,6 +2,12 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-14
+
+- **Reusable private wake recordings:** `scripts/wake-base.sh` prompts for eight
+  positive/eight negative microphone takes and retains the base on the Echo,
+  outside failed-enrollment cleanup. It does not train or replace a wake model.
+
 ## 2026-11-13
 
 - **Host-side experimental MSWW generation:** explicit per-word training inputs,

@@ -417,7 +417,9 @@ negatives supply the 30 continuous negative-prefix context variants. The
 reserved development and final-test recordings never supply augmentation.
 The native backend appends personal negatives to the fitting pool, uses the
 separate calibration pool only for threshold calibration, and runs the fixed
-`.3` L2 / `.05` positive-fraction recipe once. It does not run nine expensive
+`3` L2 / `.05` positive-fraction recipe once. The maintained research default
+regularization avoids the `.3` recipe's sensitivity to real preparation/alignment
+differences, observed on the reusable Nova baseline. It does not run nine expensive
 full-pool fits. Augmentation and pools are excluded from the original 16
 outcome/replay checks; all 16 original checks still have to pass. Legacy
 short-negative bundles and their selection grid are unchanged.

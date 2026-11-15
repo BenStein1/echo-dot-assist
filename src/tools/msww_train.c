@@ -235,11 +235,13 @@ int main(int argc,char **argv)
     static char *fraction[] = {"0.05", "0.15", "0.35"};
     struct row r;float accept=0,best=-1;unsigned best_li=0,best_pi=0;
     /* The full-coverage recipe is fixed before personal calibration: one fit,
-     * not nine ~20-minute fits on an Echo. Legacy bundles retain their grid. */
+     * not nine ~20-minute fits on an Echo. Use the maintained research default
+     * L2=3: .3 overfits small preparation/alignment differences. Legacy bundles
+     * retain their grid. */
     int prepared=0,pool_counts[2]={0};for(int k=0;k<n;k++)if(clips[k].pool){prepared=1;pool_counts[clips[k].split]++;}
     if(prepared)for(int k=0;k<n;k++)if(clips[k].label&&clips[k].start<0){fprintf(stderr,"prepared positives need word windows\n");return 2;}
     if(prepared&&(pool_counts[0]!=1||pool_counts[1]!=1)){fprintf(stderr,"need one fitting and one calibration pool\n");return 2;}
-    for(unsigned li=0;li<(prepared?1u:3u);li++)for(unsigned pi=0;pi<(prepared?1u:3u);pi++){
+    for(unsigned li=prepared?1u:0u;li<(prepared?2u:3u);li++)for(unsigned pi=0;pi<(prepared?1u:3u);pi++){
         pid_t pid=fork();if(pid<0)return 2;
         if(!pid){char *args[]={"msww_row",pool,pos,row,"0.6",l2[li],fraction[pi],NULL};_exit(msww_fit_main(7,args));}
         int status;if(waitpid(pid,&status,0)!=pid||!WIFEXITED(status)||WEXITSTATUS(status)){fprintf(stderr,"MSWW row fit failed\n");return 1;}

@@ -3,6 +3,7 @@ import array
 import copy
 import contextlib
 import io
+import math
 import subprocess
 import importlib.util
 from pathlib import Path
@@ -23,6 +24,20 @@ def pcm(value, n=64000):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_quality_rejects_isolated_transient_but_allows_short_utterance(self):
+        for amplitude in (300, 32767):
+            transient = pcm(0, 32000) + pcm(amplitude, 1) + pcm(0, 31999)
+            with self.assertRaisesRegex(ValueError, 'Nearly silent'):
+                wake.quality(transient, 4)
+        # A short voiced-like burst surrounded by silence must not need to
+        # fill the four-second recording window to pass the level check.
+        voiced = array.array('h', (int(500 * math.sin(2 * math.pi * 180 * i / 16000))
+                                   for i in range(3200)))
+        if sys.byteorder != 'little':
+            voiced.byteswap()
+        utterance = pcm(0, 32000) + voiced.tobytes() + pcm(0, 28800)
+        self.assertEqual(wake.quality(utterance, 4)['active_ms'], 200)
+
     def test_quality_rejects_silence_clipping_and_truncation(self):
         for data in (pcm(0), pcm(32767), pcm(1000, 100), pcm(1000) + b'x'):
             with self.assertRaises(ValueError):

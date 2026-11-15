@@ -26,11 +26,17 @@ def quality(data, seconds):
         samples.byteswap()
     peak = max(map(abs, samples), default=0)
     clipped = sum(abs(x) >= 32760 for x in samples)
-    if peak < 100:
+    # Level sanity only, not speech detection: require 100 ms of nontrivial
+    # 20-ms RMS energy so a click in an otherwise silent take cannot pass.
+    window = 320
+    active_windows = sum(sum(x * x for x in samples[i:i + window]) >= window * 100 ** 2
+                         for i in range(0, len(samples) - window + 1, window))
+    if peak < 100 or active_windows < 5:
         raise ValueError('Nearly silent: speak a little closer to the Echo.')
     if clipped * 100 > len(samples):
         raise ValueError('Clipping: speak a little farther from the Echo.')
-    return {'bytes': len(data), 'peak': peak, 'clipped_samples': clipped,
+    return {'bytes': len(data), 'peak': peak, 'active_ms': active_windows * 20,
+            'clipped_samples': clipped,
             'sha256': hashlib.sha256(data).hexdigest()}
 
 
